@@ -51,15 +51,36 @@ def transmission(d, c0, fx, fy, aspect=1.0, angle=0.0):
     return T, r
 
 
-def insert(gray_f, cx, cy, d, c0, aspect=1.0, angle=0.0):
-    """gray_f(float32)에 (cx, cy) 중심 이물을 곱해 넣는다. 제자리 수정. 영상 밖으로 나가는 부분은 자른다."""
+def insert(gray_f, cx, cy, d, c0, aspect=1.0, angle=0.0, residual=None, rng=None):
+    """gray_f(float32)에 (cx, cy) 중심 이물을 곱해 넣는다. 제자리 수정. 영상 밖으로 나가는 부분은 자른다.
+
+    residual 을 주면 X선 잡음 보정을 한다. 광자 잡음은 밝기의 제곱근에 비례하는데, 곱셈 합성은 잡음까지
+    T배로 줄여 실제(√T배)보다 매끈해진다. 모자란 분산 σ²·T(1-T) 만큼, 6~12px 떨어진 곳의 잡음(residual)을
+    √(T(1-T)) 배로 옮겨 더한다. 이웃 픽셀 간 상관(결)도 그대로 따라온다.
+    """
     ix, iy = int(np.floor(cx)), int(np.floor(cy))
     T, r = transmission(d, c0, cx - ix, cy - iy, aspect, angle)
     h, w = gray_f.shape
     y0, x0 = iy - r, ix - r
     ty0, tx0 = max(0, -y0), max(0, -x0)
     ty1, tx1 = T.shape[0] - max(0, y0 + T.shape[0] - h), T.shape[1] - max(0, x0 + T.shape[1] - w)
-    gray_f[y0 + ty0:y0 + ty1, x0 + tx0:x0 + tx1] *= T[ty0:ty1, tx0:tx1]
+    Tc = T[ty0:ty1, tx0:tx1]
+    ys, xs = slice(y0 + ty0, y0 + ty1), slice(x0 + tx0, x0 + tx1)
+    gray_f[ys, xs] *= Tc
+    if residual is not None:
+        ph, pw = Tc.shape
+        for _ in range(50):
+            dy, dx = rng.integers(6, 13, 2) * rng.choice([-1, 1], 2)
+            sy, sx = ys.start + dy, xs.start + dx
+            if 0 <= sy and sy + ph <= h and 0 <= sx and sx + pw <= w:
+                gray_f[ys, xs] += residual[sy:sy + ph, sx:sx + pw] * np.sqrt(Tc * (1 - Tc))
+                break
+
+
+def noise_residual(gray):
+    """잡음 성분 = 영상 - 가우시안(σ=2) 흐림. 이물 크기(수 px)보다 가는 결을 담는다."""
+    f = gray.astype(np.float32)
+    return f - cv2.GaussianBlur(f, (0, 0), 2)
 
 
 def site_features(gray, pm, band, dist, cx, cy):
@@ -80,9 +101,13 @@ def band_mask(gray, pm):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--noise", action="store_true", help="X선 잡음 보정 (결과: data/synth_n). 이물 위치·조건은 보정 없는 판과 같다")
+    args = ap.parse_args()
     cfg = yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
-    out = data / "synth"
+    out = data / ("synth_n" if args.noise else "synth")
     (out / "images").mkdir(parents=True, exist_ok=True)
     (out / "labels").mkdir(parents=True, exist_ok=True)
     man = pd.read_csv(data / "manifest.csv")
@@ -107,6 +132,8 @@ def main():
         for v in range(VARIANTS):
             rng = np.random.default_rng([cfg["seed"], int(r.sha1[:8], 16), v])
             f = g.astype(np.float32)
+            res = noise_residual(g) if args.noise else None
+            nrng = np.random.default_rng([cfg["seed"], int(r.sha1[:8], 16), v, 99])
             placed, labels = [], []
             for _ in range(PER_IMAGE):
                 for _try in range(100):
@@ -116,7 +143,7 @@ def main():
                         break
                 c0, d = grid[rng.integers(len(grid))]
                 feats = site_features(g, pm, band, dist, cx, cy)
-                insert(f, cx, cy, d, c0)
+                insert(f, cx, cy, d, c0, residual=res, rng=nrng)
                 placed.append((cx, cy))
                 labels.append((cx, cy))
                 rows.append(dict(img=f"{r.id}__s{v:02d}", src=r.id, machine=r.machine, cx=cx, cy=cy,

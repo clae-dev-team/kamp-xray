@@ -22,7 +22,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from prepare import product_mask
-from synth import band_mask, insert
+from synth import band_mask, insert, noise_residual
 
 ROOT = Path(__file__).resolve().parents[1]
 VARIANTS = 3
@@ -37,9 +37,14 @@ SEED_OFFSET = 7919           # 평가셋 난수와 겹치지 않게
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--noise", action="store_true", help="X선 잡음 보정 (결과: data/aug_n, data/aug_n.yaml)")
+    args = ap.parse_args()
     cfg = yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
-    out = data / "aug"
+    tag = "aug_n" if args.noise else "aug"
+    out = data / tag
     (out / "images").mkdir(parents=True, exist_ok=True)
     (out / "labels").mkdir(parents=True, exist_ok=True)
     man = pd.read_csv(data / "manifest.csv")
@@ -61,6 +66,8 @@ def main():
         for v in range(VARIANTS):
             rng = np.random.default_rng([cfg["seed"] + SEED_OFFSET, int(r.sha1[:8], 16), v])
             f = g.astype(np.float32)
+            res = noise_residual(g) if args.noise else None
+            nrng = np.random.default_rng([cfg["seed"] + SEED_OFFSET, int(r.sha1[:8], 16), v, 99])
             placed, labels = [], [tuple(b) for b in real]
             for _ in range(rng.integers(N_RANGE[0], N_RANGE[1] + 1)):
                 pool = cand["band"] if (rng.random() < BAND_P and len(cand["band"])) else cand["any"]
@@ -74,7 +81,7 @@ def main():
                 shard = rng.random() < SHARD_P
                 aspect = rng.uniform(*ASPECT_RANGE) if shard else 1.0
                 angle = rng.uniform(0, np.pi)
-                insert(f, cx, cy, d, c0, aspect, angle)
+                insert(f, cx, cy, d, c0, aspect, angle, residual=res, rng=nrng)
                 # 박스: 모양이 차지하는 범위 + 여유, 최소 MIN_BOX
                 ex = abs(d * aspect / 2 * np.cos(angle)) + abs(d / 2 * np.sin(angle))
                 ey = abs(d * aspect / 2 * np.sin(angle)) + abs(d / 2 * np.cos(angle))
@@ -93,7 +100,7 @@ def main():
     (out / "train.txt").write_text("\n".join(orig + paths) + "\n", encoding="utf-8")
     ds = {"path": str((data / "clean").resolve()), "train": str((out / "train.txt").resolve()),
           "val": "val.txt", "test": "test.txt", "names": {0: "Defect"}}
-    yaml.safe_dump(ds, open(data / "aug.yaml", "w", encoding="utf-8"), allow_unicode=True)
+    yaml.safe_dump(ds, open(data / f"{tag}.yaml", "w", encoding="utf-8"), allow_unicode=True)
     pd.DataFrame(rows).to_csv(out / "defects.csv", index=False, encoding="utf-8-sig")
     json.dump(dict(variants=VARIANTS, n_range=N_RANGE, c0_range=C0_RANGE, d_range=D_RANGE, shard_p=SHARD_P,
                    aspect_range=ASPECT_RANGE, band_p=BAND_P, n_images=len(paths), n_defects=len(rows),

@@ -31,6 +31,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import baseline as B
+from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
 RECALL_TARGET = 0.99
@@ -40,7 +41,7 @@ EPS = 1e-6
 
 def yolo_scores(name, paths):
     from ultralytics import YOLO
-    model = YOLO(str(ROOT / "runs" / name / "weights" / "best.pt"))
+    model = YOLO(str(weights_path(name)))
     out = []
     for k in tqdm(range(0, len(paths), 32), desc=name):
         for r in model.predict([str(p) for p in paths[k:k + 32]], imgsz=640, conf=0.001, max_det=100, verbose=False):

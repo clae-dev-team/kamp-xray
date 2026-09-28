@@ -22,6 +22,7 @@ from PIL import Image
 import baseline as B
 from prepare import restore
 from synth import insert
+from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SWAP = dict(d=2.0, c0=0.70)
@@ -96,7 +97,7 @@ def main():
     bl = json.load(open(ROOT / "results/baseline_clean/metrics.json", encoding="utf-8"))
     yo = json.load(open(ROOT / f"results/yolo_{args.yolo}/metrics.json", encoding="utf-8"))
     boxes = {int(k): v for k, v in bl["params"]["box_by_machine"].items()}
-    model = YOLO(str(ROOT / "runs" / args.yolo / "weights" / "best.pt"))
+    model = YOLO(str(weights_path(args.yolo)))
     summary = {}
     for cond, dct in imgs.items():
         rows = []

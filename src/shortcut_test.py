@@ -19,6 +19,7 @@ import yaml
 from PIL import Image
 
 import metrics as M
+from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
 # 원본 표시에서 실측한 색 빈도 (빨강이 대부분)
@@ -91,7 +92,7 @@ def main():
 
     res, examples = {}, {}
     for tag, name in [("정제본학습", args.clean), ("원본학습", args.raw)]:
-        model = YOLO(str(ROOT / "runs" / name / "weights" / "best.pt"))
+        model = YOLO(str(weights_path(name)))
         thr = json.load(open(ROOT / "results" / f"yolo_{name}" / "metrics.json", encoding="utf-8"))["thresholds"]["F1최대"]
         for cond, imgs in inputs.items():
             p = predict(model, imgs, ids)

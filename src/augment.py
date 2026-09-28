@@ -40,10 +40,13 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--noise", action="store_true", help="X선 잡음 보정 (결과: data/aug_n, data/aug_n.yaml)")
+    ap.add_argument("--variants", type=int, default=VARIANTS, help="train 영상 한 장당 합성 영상 수 (3이 아니면 결과 폴더 aug_x<N>)")
     args = ap.parse_args()
     cfg = yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
     tag = "aug_n" if args.noise else "aug"
+    if args.variants != VARIANTS:
+        tag += f"_x{args.variants}"
     out = data / tag
     (out / "images").mkdir(parents=True, exist_ok=True)
     (out / "labels").mkdir(parents=True, exist_ok=True)
@@ -63,7 +66,7 @@ def main():
             forbid[max(0, int(cy - bh / 2 - 10)):int(cy + bh / 2 + 10),
                    max(0, int(cx - bw / 2 - 10)):int(cx + bw / 2 + 10)] = 1
         cand = {"band": np.argwhere(band & (forbid == 0)), "any": np.argwhere((pm > 0) & (forbid == 0))}
-        for v in range(VARIANTS):
+        for v in range(args.variants):
             rng = np.random.default_rng([cfg["seed"] + SEED_OFFSET, int(r.sha1[:8], 16), v])
             f = g.astype(np.float32)
             res = noise_residual(g) if args.noise else None
@@ -102,7 +105,7 @@ def main():
           "val": "val.txt", "test": "test.txt", "names": {0: "Defect"}}
     yaml.safe_dump(ds, open(data / f"{tag}.yaml", "w", encoding="utf-8"), allow_unicode=True)
     pd.DataFrame(rows).to_csv(out / "defects.csv", index=False, encoding="utf-8-sig")
-    json.dump(dict(variants=VARIANTS, n_range=N_RANGE, c0_range=C0_RANGE, d_range=D_RANGE, shard_p=SHARD_P,
+    json.dump(dict(variants=args.variants, n_range=N_RANGE, c0_range=C0_RANGE, d_range=D_RANGE, shard_p=SHARD_P,
                    aspect_range=ASPECT_RANGE, band_p=BAND_P, n_images=len(paths), n_defects=len(rows),
                    n_train_total=len(orig) + len(paths)),
               open(out / "config.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)

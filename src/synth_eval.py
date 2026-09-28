@@ -22,6 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import baseline as B
+from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
 MARGIN = 2
@@ -29,7 +30,7 @@ MARGIN = 2
 
 def yolo_preds(name, paths, ids, imgsz=640, batch=32):
     from ultralytics import YOLO
-    model = YOLO(str(ROOT / "runs" / name / "weights" / "best.pt"))
+    model = YOLO(str(weights_path(name)))
     rows = []
     for k in tqdm(range(0, len(paths), batch), desc=f"YOLO {name}"):
         res = model.predict([str(p) for p in paths[k:k + batch]], imgsz=imgsz, conf=0.001,

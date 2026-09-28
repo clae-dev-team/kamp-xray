@@ -27,6 +27,16 @@ ROOT = Path(__file__).resolve().parents[1]
 RECALL_TARGET = 0.95
 
 
+def weights_path(name):
+    """평가에 쓸 가중치. 에폭 고정 학습(final.pt)이 있으면 그것, 없으면 val 기준 best.pt.
+
+    val 은 실제 이물만 있어 거의 만점이라 best.pt 가 이른 에폭에 멈출 수 있다. 모델끼리 비교할 때는
+    --patience 0 으로 끝까지 돌리고 마지막 에폭(final.pt)을 쓴다.
+    """
+    w = ROOT / "runs" / name / "weights"
+    return w / "final.pt" if (w / "final.pt").exists() else w / "best.pt"
+
+
 def predict(model, paths, ids, imgsz, batch=32):
     rows = []
     for k in range(0, len(paths), batch):
@@ -49,6 +59,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=150)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--patience", type=int, default=50, help="조기 종료 (0 = 끄고 epochs 만큼 다 돈다. 모델끼리 비교할 때)")
     ap.add_argument("--name", required=True)
     ap.add_argument("--skip-train", action="store_true")
     args = ap.parse_args()
@@ -69,9 +80,12 @@ def main():
             project=str(ROOT / "runs"), name=args.name, exist_ok=True,
             # 흑백 X-ray라 색 증강은 끈다. 상하·좌우 뒤집기는 물리적으로 자연스럽다.
             hsv_h=0.0, hsv_s=0.0, hsv_v=0.3, flipud=0.5, fliplr=0.5,
-            patience=50, plots=True, verbose=False,
+            patience=args.patience if args.patience > 0 else args.epochs + 1, plots=True, verbose=False,
         )
-    model = YOLO(str(run_dir / "weights" / "best.pt"))
+    if not args.skip_train and args.patience == 0:
+        import shutil
+        shutil.copy(run_dir / "weights" / "last.pt", run_dir / "weights" / "final.pt")
+    model = YOLO(str(weights_path(args.name)))
 
     man = pd.read_csv(data / "manifest.csv")
     man = man[man["labeled"]].set_index("id")

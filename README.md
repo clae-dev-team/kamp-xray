@@ -17,54 +17,54 @@ pip install -r requirements.txt
 
 ## 데이터
 
-KAMP에서 받은 X-ray 검사장비 AI 데이터셋을 사용합니다. 원본 경로는 설정 파일에서 지정합니다.
+KAMP에서 받은 X-ray 검사장비 AI 데이터셋을 사용합니다. 원본 경로는 `configs/data.yaml`의 `raw_root`, `label_dir`에서 지정합니다.
 원본 이미지 일부에 포함된 색상 사각형 표시는 전처리 단계에서 제거하며, 방법과 영향은 결과보고서에 기술합니다.
 
-## 실행
-
-### 1. 전처리
-
-원본 경로는 `configs/data.yaml`의 `raw_root`, `label_dir`에서 지정합니다.
+## 한 번에 실행
 
 ```bash
-python src/prepare.py --config configs/data.yaml
+python run_all.py                    # 전처리 → 베이스라인 → 합성 증강 → 최종 모델 학습 → 판정 → 제출 파일 (GPU 약 1시간)
+python run_all.py --skip-train       # 학습 없이 runs/ 의 가중치로 나머지 전부 다시 생성 (약 15분)
+python run_all.py --all-experiments  # 보고서의 비교 모델까지 모두 다시 학습 (약 3~4시간)
+python run_all.py --from judge       # 특정 단계부터 이어서
 ```
 
-- 폴더 간 완전 중복 영상 제거 (SHA-1)
-- TXT 라벨을 파일명으로 원본 BMP와 연결
-- 색상 사각형 표시 제거: R·G·B가 다른 픽셀을 표시로 보고, 선에 수직인 방향으로 직선 보간한 뒤 바로 옆 띠의 잡음 결을 옮겨 붙임
-- 흔적 균등화: 이물이 없는 제품 영역에도 같은 크기의 가짜 사각형을 그렸다가 똑같이 복원
-- 같은 호기·같은 날짜 영상을 묶어 train/val/test 70/15/15 분할
-- 결과: `data/clean`(정제본), `data/raw`(표시가 남은 원본, 비교 실험용), `data/*.yaml`, `results/prepare/`(요약·흔적 검증·전후 비교 그림)
+최종 모델과 비교 모델 설정은 `configs/pipeline.yaml`에 있습니다. 단계별 로그는 `results/logs/`, 소요 시간은 `results/run_all.json`.
+난수 시드를 모두 고정해 전처리·합성 데이터는 몇 번을 실행해도 파일이 똑같이 나옵니다. GPU 학습은 CUDA 연산 특성상 소수점 끝자리가 조금 달라질 수 있습니다.
 
-같은 설정이면 몇 번을 실행해도 결과 파일이 동일합니다.
+**테스트 예측 결과 파일**: `results/submission/`
+- `test_images.csv` 영상별 최고 점수와 판정(합격 / 재검사 / 불합격)
+- `test_boxes.csv` 이물 위치 박스와 점수
+- `labels/<id>.txt` YOLO 형식 박스 (class cx cy w h score)
+- `thresholds.json` 사용한 모델과 판정 기준선
 
-### 2. 베이스라인 (고전 영상처리)
+## 단계
 
-```bash
-python src/baseline.py            # 정제본
-python src/baseline.py --variant raw
-```
+| 단계 | 코드 | 하는 일 | 결과 |
+|---|---|---|---|
+| prepare | `src/prepare.py` | 중복 277장 제거, 라벨 연결, 색 표시 제거·흔적 균등화, (호기·날짜) 묶음 70/15/15 분할 | `data/clean`, `data/raw`, `results/prepare` |
+| baseline | `src/baseline.py` | black top-hat 고전 영상처리. 구조요소·평활은 train AP, 기준선은 val로 결정 | `results/baseline_clean`, `results/baseline_raw` |
+| defect_stats | `src/defect_stats.py` | 실제 이물 대비·크기 측정 | `results/defect_stats` |
+| synth | `src/synth.py` | test 영상에 Beer–Lambert 곱셈 합성 이물 7,008개 (대비 11 × 지름 5) | `data/synth` |
+| augment | `src/augment.py` | train 영상에만 합성 이물을 넣은 증강셋 (30%는 길쭉한 파편) | `data/aug`, `data/aug.yaml` |
+| train | `src/train_yolo.py` | YOLO26s 학습과 공용 기준 채점. 에폭 고정 학습은 마지막 에폭(`final.pt`)을 씀 | `runs/<이름>`, `results/yolo_<이름>` |
+| normal_set | `src/normal_set.py` | val·test 이물 점만 지운 가짜 정상 + 합성 불량 | `data/normal`, `data/synth_ng` |
+| judge | `src/judge.py` | 영상 단위 합격/재검사/불합격 기준선과 확률보정(온도 스케일링) | `results/judge` |
+| predict | `src/predict.py` | 최종 모델로 test 예측, 제출 파일 | `results/submission` |
+| synth_eval | `src/synth_eval.py` | 합성 이물 대비·크기별 검출률 | `results/synth_eval_<이름>` |
+| location | `src/location_test.py` | 실제 이물 자리에서 점 지움·교체 실험 (위치 의존 검증) | `results/location_test_<이름>` |
+| shortcut | `src/shortcut_test.py` | 색 표시 지름길 검증 (`--all-experiments` 때) | `results/shortcut` |
 
-black top-hat으로 주변보다 어두운 작은 점을 찾습니다. 구조요소·평활·점수 방식은 train AP로, 판정 임계값은 val로 정하고
-test는 마지막에 한 번만 채점합니다. 결과는 `results/baseline_<variant>/`(격자 탐색표, 분할별 예측, 지표, PR 곡선).
 평가 기준은 `src/metrics.py` 하나로 모든 모델에 똑같이 적용합니다 (박스 중심 일치 기준 + IoU 0.5 기준).
-
-### 3. YOLO
-
-```bash
-python src/train_yolo.py --name y26s_640                 # YOLO26s, 입력 640, 150에폭(조기 종료 50)
-python src/train_yolo.py --name y26s_640 --skip-train    # 저장된 가중치로 채점만
-```
-
-학습 기록·가중치는 `runs/<name>/`, 공용 기준 채점 결과는 `results/yolo_<name>/`에 저장됩니다.
+판정 기준선은 모두 val에서 정하고, test는 마지막에 한 번만 채점합니다.
 
 ## 폴더 구성
 
 ```
-configs/     경로·전처리 설정
-src/         파이프라인 코드
-notebooks/   분석 노트북
-data/        전처리 결과 (저장소 제외)
-results/     예측 결과·그래프 (저장소 제외)
+run_all.py   전체 실행
+configs/     경로·전처리·모델 설정
+src/         단계별 코드
+data/        전처리·합성 결과 (저장소 제외)
+runs/        학습 기록·가중치 (저장소 제외)
+results/     지표·그래프·제출 파일 (저장소 제외)
 ```

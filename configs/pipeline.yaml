@@ -1,0 +1,15 @@
+# run_all.py 설정. 최종 모델과 보고서 비교 실험을 정의한다.
+final:
+  name: ratio3_e100          # 최종 모델: 실제 350장 + 합성 1,050장, 100에폭 고정
+  data: data/aug.yaml
+  variants: 3
+  epochs: 100
+  patience: 0
+
+# --all-experiments 일 때 추가로 학습하는 비교 모델 (보고서 표 재현용)
+experiments:
+  - {name: y26s_640_raw, variant: raw, epochs: 150, patience: 50}           # 색 표시 남은 원본 학습 (지름길 검증)
+  - {name: y26s_640, epochs: 150, patience: 50}                             # 증강 없는 첫 모델
+  - {name: ratio0_e100, epochs: 100, patience: 0}                           # 합성 0배
+  - {name: ratio1_e100, data: data/aug_x1.yaml, epochs: 100, patience: 0, variants: 1}   # 합성 1배
+  - {name: y26s_640_augn, data: data/aug_n.yaml, epochs: 150, patience: 50, noise: true} # 잡음 보정 합성

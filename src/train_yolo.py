@@ -43,6 +43,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--variant", default="clean")
+    ap.add_argument("--data", default=None, help="학습용 데이터셋 yaml (기본: data/<variant>.yaml). 채점은 항상 <variant> 영상으로")
     ap.add_argument("--model", default="yolo26s.pt")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--epochs", type=int, default=150)
@@ -63,7 +64,7 @@ def main():
     if not args.skip_train:
         model = YOLO(args.model)
         model.train(
-            data=str(data / f"{args.variant}.yaml"), imgsz=args.imgsz, epochs=args.epochs,
+            data=str(ROOT / args.data) if args.data else str(data / f"{args.variant}.yaml"), imgsz=args.imgsz, epochs=args.epochs,
             batch=args.batch, seed=args.seed, deterministic=True, workers=2,
             project=str(ROOT / "runs"), name=args.name, exist_ok=True,
             # 흑백 X-ray라 색 증강은 끈다. 상하·좌우 뒤집기는 물리적으로 자연스럽다.

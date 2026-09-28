@@ -92,7 +92,8 @@ def main():
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
     syn = data / "synth"
-    out = ROOT / "results" / "synth_eval"
+    # 기본 모델 결과는 synth_eval/, 다른 모델은 synth_eval_<이름>/ 에 따로 둔다
+    out = ROOT / "results" / ("synth_eval" if args.yolo == "y26s_640" else f"synth_eval_{args.yolo}")
     out.mkdir(parents=True, exist_ok=True)
     scfg = json.load(open(syn / "config.json", encoding="utf-8"))
     half = scfg["box"] / 2

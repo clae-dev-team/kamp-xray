@@ -58,7 +58,8 @@ def main():
     from ultralytics import YOLO
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
-    out = ROOT / "results" / "location_test"
+    # 기본 모델 결과는 location_test/, 다른 모델은 location_test_<이름>/ 에 따로 둔다
+    out = ROOT / "results" / ("location_test" if args.yolo == "y26s_640" else f"location_test_{args.yolo}")
     out.mkdir(parents=True, exist_ok=True)
 
     man = pd.read_csv(data / "manifest.csv")

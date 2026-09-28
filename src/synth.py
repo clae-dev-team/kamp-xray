@@ -33,25 +33,33 @@ BOX = 10             # 채점용 박스 한 변 (실제 라벨 중앙값)
 SS = 8               # 세분화 배율
 
 
-def transmission(d, c0, fx, fy):
-    """이물 투과율 맵 (작은 패치)과 패치 왼쪽 위 좌표 오프셋. fx, fy = 중심의 소수부."""
-    r = int(np.ceil(d / 2)) + 1
+def transmission(d, c0, fx, fy, aspect=1.0, angle=0.0):
+    """이물 투과율 맵 (작은 패치)과 패치 반폭 r. fx, fy = 중심의 소수부.
+
+    aspect > 1 이면 긴 지름 d·aspect, 짧은 지름 d 인 회전 타원체(길쭉한 파편), angle 은 라디안.
+    """
+    r = int(np.ceil(d * aspect / 2)) + 1
     n = (2 * r + 1) * SS
     g = (np.arange(n) + 0.5) / SS - r - 0.5
     xx, yy = np.meshgrid(g - (fx - 0.5), g - (fy - 0.5))
-    rho = np.sqrt(xx ** 2 + yy ** 2) / (d / 2)
+    u = xx * np.cos(angle) + yy * np.sin(angle)
+    v = -xx * np.sin(angle) + yy * np.cos(angle)
+    rho = np.sqrt((u / (d * aspect / 2)) ** 2 + (v / (d / 2)) ** 2)
     t = np.sqrt(np.clip(1 - rho ** 2, 0, None))
     T = np.exp(np.log(1 - c0) * t)
     T = T.reshape(2 * r + 1, SS, 2 * r + 1, SS).mean((1, 3))
     return T, r
 
 
-def insert(gray_f, cx, cy, d, c0):
-    """gray_f(float32)에 (cx, cy) 중심 이물을 곱해 넣는다. 제자리 수정."""
+def insert(gray_f, cx, cy, d, c0, aspect=1.0, angle=0.0):
+    """gray_f(float32)에 (cx, cy) 중심 이물을 곱해 넣는다. 제자리 수정. 영상 밖으로 나가는 부분은 자른다."""
     ix, iy = int(np.floor(cx)), int(np.floor(cy))
-    T, r = transmission(d, c0, cx - ix, cy - iy)
+    T, r = transmission(d, c0, cx - ix, cy - iy, aspect, angle)
+    h, w = gray_f.shape
     y0, x0 = iy - r, ix - r
-    gray_f[y0:y0 + T.shape[0], x0:x0 + T.shape[1]] *= T
+    ty0, tx0 = max(0, -y0), max(0, -x0)
+    ty1, tx1 = T.shape[0] - max(0, y0 + T.shape[0] - h), T.shape[1] - max(0, x0 + T.shape[1] - w)
+    gray_f[y0 + ty0:y0 + ty1, x0 + tx0:x0 + tx1] *= T[ty0:ty1, tx0:tx1]
 
 
 def site_features(gray, pm, band, dist, cx, cy):

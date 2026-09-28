@@ -3,3 +3,4 @@ data/
 results/
 runs/
 *.pt
+__pycache__/

@@ -1,0 +1,22 @@
+# 전처리 설정. 원본 경로는 PC마다 다르면 여기만 고친다.
+raw_root: "D:/dataset/test1/yolov3/X선이물검출기(06.23_09.22)"   # {1,2,3}호기/SN*_NgImage/*.bmp
+label_dir: "D:/dataset/라벨링 6종 세트/labels"                     # YOLO 형식 TXT 500개
+out_dir: "data"
+report_dir: "results/prepare"
+seed: 2026
+
+# 분할: 같은 호기·같은 날짜 사진은 한 묶음으로 같은 쪽에 넣는다 (비슷한 사진이 양쪽에 퍼지는 누수 방지)
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+
+# 색 사각형 표시 제거
+clean:
+  method: line            # line = 선 수직 방향 직선 보간 / telea = OpenCV 인페인팅 (비교용)
+  inpaint_radius: 3       # telea 전용
+  mask_dilate: 0          # 표시 선 바깥으로 넓혀 지울 픽셀 수
+  texture: true           # line 전용: 몇 px 옆 자리의 잡음 결을 옮겨 붙인다
+  fake_per_real: 1.0      # 진짜 라벨 1개당 가짜 사각형 수 (흔적 균등화)
+  fake_side: [18, 20]     # 실측한 표시 크기(px)
+  fake_thickness: 2

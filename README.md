@@ -39,6 +39,17 @@ python src/prepare.py --config configs/data.yaml
 
 같은 설정이면 몇 번을 실행해도 결과 파일이 동일합니다.
 
+### 2. 베이스라인 (고전 영상처리)
+
+```bash
+python src/baseline.py            # 정제본
+python src/baseline.py --variant raw
+```
+
+black top-hat으로 주변보다 어두운 작은 점을 찾습니다. 구조요소·평활·점수 방식은 train AP로, 판정 임계값은 val로 정하고
+test는 마지막에 한 번만 채점합니다. 결과는 `results/baseline_<variant>/`(격자 탐색표, 분할별 예측, 지표, PR 곡선).
+평가 기준은 `src/metrics.py` 하나로 모든 모델에 똑같이 적용합니다 (박스 중심 일치 기준 + IoU 0.5 기준).
+
 > 작성 예정: 학습 → 추론 → 결과 생성
 
 ## 폴더 구성

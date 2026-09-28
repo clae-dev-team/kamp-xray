@@ -50,7 +50,14 @@ black top-hat으로 주변보다 어두운 작은 점을 찾습니다. 구조요
 test는 마지막에 한 번만 채점합니다. 결과는 `results/baseline_<variant>/`(격자 탐색표, 분할별 예측, 지표, PR 곡선).
 평가 기준은 `src/metrics.py` 하나로 모든 모델에 똑같이 적용합니다 (박스 중심 일치 기준 + IoU 0.5 기준).
 
-> 작성 예정: 학습 → 추론 → 결과 생성
+### 3. YOLO
+
+```bash
+python src/train_yolo.py --name y26s_640                 # YOLO26s, 입력 640, 150에폭(조기 종료 50)
+python src/train_yolo.py --name y26s_640 --skip-train    # 저장된 가중치로 채점만
+```
+
+학습 기록·가중치는 `runs/<name>/`, 공용 기준 채점 결과는 `results/yolo_<name>/`에 저장됩니다.
 
 ## 폴더 구성
 

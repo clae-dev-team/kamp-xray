@@ -20,3 +20,4 @@ experiments:
   - {name: ratio1_e100, data: data/aug_x1.yaml, epochs: 100, patience: 0, variants: 1}   # 합성 1배
   - {name: y26s_640_augn, data: data/aug_n.yaml, epochs: 150, patience: 50, noise: true} # 잡음 보정 합성
   - {name: ratio3bg_e100, data: data/aug_bg.yaml, epochs: 100, patience: 0}              # 합성 3배 + 이물 지운 배경 350장 (채택 안 함)
+  - {name: y11s_ratio3_e100, model: yolo11s.pt, data: data/aug.yaml, epochs: 100, patience: 0}  # 이전 세대 YOLO11s, 최종과 같은 조건 (채택 안 함)

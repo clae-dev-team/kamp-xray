@@ -41,6 +41,8 @@ def train(m, skip=False):
         a += ["--data", m["data"]]
     if m.get("variant"):
         a += ["--variant", m["variant"]]
+    if m.get("model"):
+        a += ["--model", m["model"]]
     sh(*a, *(["--skip-train"] if skip else []), log=f"{'score' if skip else 'train'}_{m['name']}.log")
 
 

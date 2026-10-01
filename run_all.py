@@ -19,8 +19,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable
-STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "normal_set", "judge",
-          "predict", "synth_eval", "location", "shortcut"]
+STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
+          "judge", "predict", "synth_eval", "location", "testpiece", "ensemble", "monitor", "shortcut", "gradcam"]
 
 
 def sh(*args, log=None):
@@ -54,6 +54,8 @@ def main():
     final, exps = pipe["final"], pipe["experiments"] if args.all_experiments else []
     (ROOT / "results" / "logs").mkdir(parents=True, exist_ok=True)
     yolo_models = [final["name"]] + [e["name"] for e in exps if e.get("variant") != "raw"]
+    cnn = pipe.get("cnn")          # 비교용 조각 분류 CNN (학습 약 5분)
+    models = yolo_models + ([cnn["name"]] if cnn else [])
     timing = {}
 
     def stage(name, fn):
@@ -72,6 +74,8 @@ def main():
 
     def augment():
         sh("src/augment.py", "--variants", final.get("variants", 3), log="augment.log")
+        if any(e.get("data") == "data/aug_bg.yaml" for e in exps):
+            sh("src/background_set.py", log="background_set.log")        # 이물 지운 학습용 배경 (비교 실험)
         for e in exps:
             if e.get("data", "").startswith("data/aug"):
                 a = ["src/augment.py", "--variants", e.get("variants", 3)] + (["--noise"] if e.get("noise") else [])
@@ -82,16 +86,30 @@ def main():
         for m in [final] + exps:
             train(m, skip=args.skip_train)
     stage("train", train_all)
+    if cnn:
+        stage("cnn", lambda: sh("src/cnn.py", "--name", cnn["name"], "--train-list", cnn["train_list"],
+                                "--epochs", cnn["epochs"], *(["--skip-train"] if args.skip_train else []),
+                                log=f"cnn_{cnn['name']}.log"))
     stage("normal_set", lambda: sh("src/normal_set.py", log="normal_set.log"))
-    stage("judge", lambda: sh("src/judge.py", "--yolo", *yolo_models, log="judge.log"))
+    # 판정 기준선(사양 기준)에 쓰는 검출 사양은 val 테스트피스로 정한다 (시험 사진이 기준에 새지 않게)
+    stage("spec_val", lambda: [sh("src/testpiece.py", "--split", "val", "--models", "YOLO", "--yolo", m,
+                                  log=f"testpiece_val_{m}.log") for m in yolo_models])
+    stage("judge", lambda: sh("src/judge.py", "--yolo", *models, log="judge.log"))
     stage("predict", lambda: sh("src/predict.py", "--name", final["name"], log="predict.log"))
-    stage("synth_eval", lambda: [sh("src/synth_eval.py", "--yolo", m, log=f"synth_eval_{m}.log") for m in yolo_models])
-    stage("location", lambda: [sh("src/location_test.py", "--yolo", m, log=f"location_{m}.log") for m in yolo_models])
+    stage("synth_eval", lambda: [sh("src/synth_eval.py", "--yolo", m, log=f"synth_eval_{m}.log") for m in models])
+    stage("location", lambda: [sh("src/location_test.py", "--yolo", m, log=f"location_{m}.log") for m in models])
+    cnn_name = cnn["name"] if cnn else "cnn_aug"
+    stage("testpiece", lambda: sh("src/testpiece.py", "--yolo", final["name"], "--cnn", cnn_name, log="testpiece.log"))
+    if cnn:
+        stage("ensemble", lambda: sh("src/ensemble.py", "--yolo", final["name"], "--cnn", cnn_name, log="ensemble.log"))
+    stage("monitor", lambda: sh("src/monitor.py", "--yolo", final["name"], log="monitor.log"))
     if any(e.get("variant") == "raw" for e in exps):
         stage("shortcut", lambda: sh("src/shortcut_test.py", "--clean", final["name"], "--raw", "y26s_640_raw",
                                      log="shortcut.log"))
+        stage("gradcam", lambda: sh("src/gradcam.py", "--clean", final["name"], "--raw", "y26s_640_raw",
+                                    log="gradcam.log"))
 
-    json.dump({"final": final["name"], "models": yolo_models, "skip_train": args.skip_train, "seconds": timing},
+    json.dump({"final": final["name"], "models": models, "skip_train": args.skip_train, "seconds": timing},
               open(ROOT / "results" / "run_all.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print("완료:", json.dumps(timing, ensure_ascii=False))
 

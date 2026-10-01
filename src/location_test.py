@@ -22,6 +22,7 @@ from PIL import Image
 import baseline as B
 from prepare import restore
 from synth import insert
+import cnn as C
 from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,23 +96,32 @@ def main():
     sites = pd.DataFrame(sites)
 
     bl = json.load(open(ROOT / "results/baseline_clean/metrics.json", encoding="utf-8"))
-    yo = json.load(open(ROOT / f"results/yolo_{args.yolo}/metrics.json", encoding="utf-8"))
+    yo = json.load(open(C.metrics_file(args.yolo), encoding="utf-8"))
     boxes = {int(k): v for k, v in bl["params"]["box_by_machine"].items()}
-    model = YOLO(str(weights_path(args.yolo)))
+    use_cnn = C.is_cnn(args.yolo)
+    lab = "CNN" if use_cnn else "YOLO"
+    if use_cnn:
+        model, cboxes, dev = C.load(args.yolo)
+    else:
+        model = YOLO(str(weights_path(args.yolo)))
     summary = {}
     for cond, dct in imgs.items():
         rows = []
         for r in man.itertuples():
             g = dct[r.id]
-            res = model.predict(cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), imgsz=640, conf=0.001, max_det=100,
-                                verbose=False)[0]
-            for (x0, y0, x1, y1), s in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.conf.cpu().numpy()):
-                rows.append(("YOLO", r.id, (x0 + x1) / 2, (y0 + y1) / 2, float(s)))
+            if use_cnn:
+                for q in C.detect(model, g, cboxes[int(r.machine)], dev).itertuples():
+                    rows.append((lab, r.id, (q.x0 + q.x1) / 2, (q.y0 + q.y1) / 2, float(q.score)))
+            else:
+                res = model.predict(cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), imgsz=640, conf=0.001, max_det=100,
+                                    verbose=False)[0]
+                for (x0, y0, x1, y1), s in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.conf.cpu().numpy()):
+                    rows.append((lab, r.id, (x0 + x1) / 2, (y0 + y1) / 2, float(s)))
             d = B.detect(g, bl["params"]["se"], bl["params"]["sigma"], bl["params"]["score"], boxes[int(r.machine)])
             for q in d.itertuples():
                 rows.append(("베이스라인", r.id, (q.x0 + q.x1) / 2, (q.y0 + q.y1) / 2, float(q.score)))
         pred = pd.DataFrame(rows, columns=["model", "id", "px", "py", "score"])
-        for name, thr in [("YOLO", yo["thresholds"]["F1최대"]), ("베이스라인", bl["thresholds"]["F1최대"])]:
+        for name, thr in [(lab, yo["thresholds"]["F1최대"]), ("베이스라인", bl["thresholds"]["F1최대"])]:
             p = pred[pred["model"] == name]
             sc = np.array([site_score(p[p["id"] == s.id], s.cx, s.cy) for s in sites.itertuples()])
             sites[f"{cond}/{name}"] = sc

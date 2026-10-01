@@ -10,6 +10,14 @@ val에서 기준을 정하고 test는 마지막에 한 번만 잰다.
     최고값이 그 점에 끌려 올라간다. 불합격선을 넘은 가짜 정상은 suspects.csv 로 따로 내보내 눈으로 확인한다.
   그 사이 = 재검사. t_low 가 t_high 보다 높으면 재검사 구간 없이 한 기준선(t_low)만 쓴다.
 
+사양 기준(권장, results/testpiece_val_<모델>/spec.csv 가 있을 때 함께 계산):
+  '모든 불량 99%'는 이 장비·AI로 보장할 수 없는 아주 옅은 합성 이물까지 잡으려다 합격선이 크게 내려가
+  정상 제품 약 20%가 재검사로 밀린다. 그래서 안전 목표를 '검출 사양(val 테스트피스, 90% 보장 진하기) 이상 이물은
+  합격시키지 않는다'로 정한다.
+  합격선  = val 의 실제 불량 + 사양 이상 합성 불량 중 최저 점수
+  불합격선 = max(합격선, val 가짜 정상 점수 99% 분위)   (정상이 불합격까지 가는 일은 약 1%)
+  사양보다 옅은 이물은 보장하지 않으며, 그 놓침 수를 따로 보고한다.
+
 확률보정: YOLO 신뢰도 p 를 logit(p)/T 로 다시 시그모이드. T 는 val NLL 최소화.
 베이스라인 점수는 확률이 아니라서 Platt(a·s+b) 로 맞춘다. 전후 ECE(10구간)를 test에서 비교.
 
@@ -31,6 +39,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import baseline as B
+import cnn as C
 from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +48,10 @@ NORMAL_Q = 0.95
 EPS = 1e-6
 
 
-def yolo_scores(name, paths):
+def yolo_scores(name, paths, machines=None):
+    if C.is_cnn(name):   # 조각 분류 CNN: 영상 안 봉우리 최고 확률
+        d = C.predict_paths(name, paths, list(range(len(paths))), machines)
+        return d.groupby("id")["score"].max().reindex(range(len(paths)), fill_value=0.0).to_numpy()
     from ultralytics import YOLO
     model = YOLO(str(weights_path(name)))
     out = []
@@ -90,13 +102,28 @@ def ece(p, y, bins=10):
     return float(e)
 
 
+def in_spec(df, spec):
+    """합성 불량이 검출 사양(그 호기·그 지름 이하 사양 지름의 90% 보장 진하기) 이상인가. 실제 불량은 모두 사양 안으로 본다."""
+    ds = np.array(sorted(spec["d"].unique()))
+    out = []
+    for r in df.itertuples():
+        if r.kind == "real_ng":
+            out.append(True)
+        elif r.kind != "synth_ng" or not (ds <= r.d).any():
+            out.append(False)
+        else:
+            c = spec[(spec["machine"] == r.machine) & (spec["d"] == ds[ds <= r.d].max())]["min_c0"].iloc[0]
+            out.append(bool(pd.notna(c) and r.c0 >= c))
+    return np.array(out)
+
+
 def tiers(s, t_low, t_high):
     return np.where(s >= t_high, "불합격", np.where(s >= t_low, "재검사", "합격"))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--yolo", nargs="+", default=["y26s_640", "y26s_640_aug"])
+    ap.add_argument("--yolo", nargs="+", default=["y26s_640", "y26s_640_aug"], help="YOLO 또는 CNN(cnn.py) 모델 이름")
     ap.add_argument("--reuse", action="store_true", help="저장된 점수(scores_*.csv)를 다시 씀")
     args = ap.parse_args()
     data = ROOT / "data"
@@ -113,7 +140,7 @@ def main():
         df["y"] = (df["kind"] != "normal").astype(int)
         df["베이스라인"] = baseline_scores(bl["params"], df["path"].tolist(), df["machine"].tolist())
         for m in args.yolo:
-            df[m] = yolo_scores(m, df["path"].tolist())
+            df[m] = yolo_scores(m, df["path"].tolist(), df["machine"].tolist())
         df.to_csv(out / f"scores_{s}.csv", index=False, encoding="utf-8-sig")
 
     val, test = sets["val"], sets["test"]
@@ -148,6 +175,32 @@ def main():
         summary[m] = res
         rel[m] = (cal(ts), ty, raw_p)
         print(m, json.dumps(res, ensure_ascii=False))
+
+    # 사양 기준 판정
+    for m in models:
+        sf = ROOT / "results" / f"testpiece_val_{m}" / "spec.csv"
+        if not sf.exists():
+            continue
+        spec = pd.read_csv(sf)
+        spec = spec[spec["model"] == "YOLO"]
+        for df in (val, test):
+            df[f"{m}_사양내"] = in_spec(df, spec)
+        vs, vy = val[m].to_numpy(), val["y"].to_numpy()
+        t_low = float(val.loc[(vy == 1) & val[f"{m}_사양내"], m].min())
+        t_high = max(t_low, float(np.quantile(vs[vy == 0], 0.99)))
+        ts = test[m].to_numpy()
+        test[f"{m}_판정_사양"] = tiers(ts, t_low, t_high)
+        tab = test.groupby("kind")[f"{m}_판정_사양"].value_counts(normalize=True).unstack(fill_value=0)
+        sn = test[test["kind"] == "synth_ng"]
+        miss = sn[sn[f"{m}_판정_사양"] == "합격"]
+        summary[m]["사양기준"] = {
+            "기준선": {"합격선": round(t_low, 4), "불합격선": round(t_high, 4)}, "사양파일": str(sf.relative_to(ROOT)),
+            "판정비율": {k: {c: round(float(v), 4) for c, v in row.items()} for k, row in tab.iterrows()},
+            "합성불량_사양내_놓침": f"{int(miss[f'{m}_사양내'].sum())}/{int(sn[f'{m}_사양내'].sum())}",
+            "합성불량_사양밖_놓침": f"{int((~miss[f'{m}_사양내']).sum())}/{int((~sn[f'{m}_사양내']).sum())}",
+            "실제불량_놓침": int((test.loc[test['kind'] == 'real_ng', f"{m}_판정_사양"] == "합격").sum()),
+            "실제불량_최저점수": round(float(test.loc[test["kind"] == "real_ng", m].min()), 4)}
+        print(m, "사양기준", json.dumps(summary[m]["사양기준"], ensure_ascii=False))
 
     test.to_csv(out / "judged_test.csv", index=False, encoding="utf-8-sig")
     sus = []

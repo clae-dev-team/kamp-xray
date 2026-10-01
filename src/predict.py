@@ -51,6 +51,8 @@ def main():
     ap.add_argument("--name", default="ratio3_e100")
     ap.add_argument("--split", default="test")
     ap.add_argument("--unlabeled", action="store_true")
+    ap.add_argument("--policy", default="spec", choices=["spec", "all"],
+                    help="spec = 검출 사양 이상 이물 기준 기준선(권장), all = val 불량 전체 99% 기준 (이전 방식)")
     args = ap.parse_args()
     from ultralytics import YOLO
 
@@ -58,7 +60,9 @@ def main():
     data = ROOT / cfg["out_dir"]
     out = ROOT / "results" / "submission"
     (out / "labels").mkdir(parents=True, exist_ok=True)
-    th = json.load(open(ROOT / "results/judge/summary.json", encoding="utf-8"))[args.name]["기준선"]
+    js = json.load(open(ROOT / "results/judge/summary.json", encoding="utf-8"))[args.name]
+    policy = "사양기준" if (args.policy == "spec" and "사양기준" in js) else "불량전체99"
+    th = js["사양기준"]["기준선"] if policy == "사양기준" else js["기준선"]
     t_low, t_high = th["합격선"], th["불합격선"]
     model = YOLO(str(weights_path(args.name)))
 
@@ -75,7 +79,8 @@ def main():
     for i in set(rows["id"]) - set(boxes["id"] if len(boxes) else []):
         (out / "labels" / f"{i}.txt").write_text("", encoding="utf-8")        # 합격 영상은 빈 파일
     json.dump({"model": args.name, "weights": str(weights_path(args.name).relative_to(ROOT)),
-               "합격선": t_low, "불합격선": t_high, "기준선_출처": "results/judge/summary.json (val에서 결정)"},
+               "합격선": t_low, "불합격선": t_high, "기준선_방식": policy,
+               "기준선_출처": "results/judge/summary.json (val에서 결정)"},
               open(out / "thresholds.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print(images["판정"].value_counts().to_dict(), "박스", len(boxes))
 

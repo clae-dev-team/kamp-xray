@@ -22,13 +22,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import baseline as B
+import cnn as C
 from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
 MARGIN = 2
 
 
-def yolo_preds(name, paths, ids, imgsz=640, batch=32):
+def yolo_preds(name, paths, ids, imgsz=640, batch=32, machines=None):
+    if C.is_cnn(name):
+        d = C.predict_paths(name, paths, ids, machines)
+        return pd.DataFrame({"img": d["id"], "px": (d.x0 + d.x1) / 2, "py": (d.y0 + d.y1) / 2, "score": d["score"]})
     from ultralytics import YOLO
     model = YOLO(str(weights_path(name)))
     rows = []
@@ -114,11 +118,13 @@ def main():
     paths = [syn / "images" / f"{i}.png" for i in imgs["img"]]
 
     bl = json.load(open(ROOT / "results/baseline_clean/metrics.json", encoding="utf-8"))
-    yo = json.load(open(ROOT / f"results/yolo_{args.yolo}/metrics.json", encoding="utf-8"))
+    yo = json.load(open(C.metrics_file(args.yolo), encoding="utf-8"))
+    lab = "CNN" if C.is_cnn(args.yolo) else "YOLO"
     models = {
         "베이스라인": (baseline_preds(bl["params"], paths, imgs["img"].tolist(), imgs["machine"].tolist()),
                     bl["thresholds"]["F1최대"]),
-        "YOLO": (yolo_preds(args.yolo, paths, imgs["img"].tolist()), yo["thresholds"]["F1최대"]),
+        lab: (yolo_preds(args.yolo, paths, imgs["img"].tolist(), machines=imgs["machine"].tolist()),
+              yo["thresholds"]["F1최대"]),
     }
 
     summary = {}
@@ -159,7 +165,7 @@ def main():
     mid = [(b.left + b.right) / 2 for b in curve.index]
     ax.axvspan(real["contrast"].quantile(.05), real["contrast"].quantile(.95), color="#f2c14e", alpha=.25,
                label="실제 이물 대비 (5~95%)")
-    for n, c in [("베이스라인", "#9aa5b1"), ("YOLO", "#1f5fa8")]:
+    for n, c in [("베이스라인", "#9aa5b1"), (lab, "#1f5fa8")]:
         ax.plot(mid, curve[f"{n}_hit"], "o-", color=c, lw=2, ms=4, label=n)
     ax.set(xlabel="측정 대비 (주변 대비 어두운 비율)", ylabel="검출률", ylim=(0, 1.03), xlim=(0, 0.6))
     ax.grid(alpha=.3)

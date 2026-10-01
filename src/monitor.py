@@ -5,7 +5,7 @@ AI에 보여 주고 잡는지 기록하면, 장비나 AI가 조용히 무뎌지�
 
 모의 조건 (모두 가정이며 실제 장비 열화 자료가 아니다)
   - 생산 흐름: 시험 분할 가짜 정상 73장을 순서대로 되풀이해 N_FRAMES 장
-  - 시험편: EVERY 장마다 1장에 지름 2px 이물 1개. 진하기 = testpiece.py 가 정한 그 호기의 사양값(90% 보장).
+  - 시험편: EVERY 장마다 1장에 지름 2px 이물 1개. 진하기 = val 테스트피스(testpiece.py --split val)가 정한 그 호기의 사양값(90% 보장).
     자리는 실제 이물처럼 **어두운 띠 안** (공장 시험편도 가장 어려운 자리에서 점검한다).
     처음에는 제품 아무 데나 넣었는데, 실제 이물(띠 안)보다 늦게 무뎌져 경보가 실제 손실 뒤에 울렸다.
   - 열화: DEGRADE_FROM 장부터 끝까지 흐림(가우시안 σ 0→BLUR_MAX)과 잡음(표준편차 0→NOISE_MAX 회색 단계)이 선형으로 증가
@@ -14,11 +14,11 @@ AI에 보여 주고 잡는지 기록하면, 장비나 AI가 조용히 무뎌지�
     이항분포에서 평상시 우연히 그 아래로 떨어질 확률이 FALSE_ALARM 이하가 되는 수 (관리도 방식)
   - 대조: 가장 심한 열화를 실제 불량 시험 사진 73장에 걸었을 때 실제 이물 재현율 (점검이 없으면 모르고 지나갈 손실)
 
-  --golden: 시험편을 생산 사진 대신 골든 세트(golden_set.py, 호기별로 가장 깨끗한 val 가짜 정상)에만 넣는다.
-    배경이 고정돼 사진 차이로 인한 흔들림이 줄어드는지, 그리고 골든 사진의 잡음 수준(표류 지표)으로
-    장비 변화를 더 일찍 알 수 있는지 본다. 결과는 results/monitor_golden/.
+  --reference: 시험편을 생산 사진 대신 기준 정상 영상(reference_set.py, 호기별로 가장 깨끗한 val 가짜 정상)에만 넣는다.
+    배경이 고정돼 사진 차이로 인한 흔들림이 줄어드는지, 그리고 기준 정상 영상의 잡음 수준(표류 지표)으로
+    장비 변화를 더 일찍 알 수 있는지 본다. 결과는 results/monitor_reference/.
 
-실행: .venv\\Scripts\\python.exe src\\monitor.py --yolo ratio3_e100 [--golden]
+실행: .venv\\Scripts\\python.exe src\\monitor.py --yolo ratio3_e100 [--reference]
 결과: results/monitor/ (timeline.csv, summary.json, timeline.png)
 """
 import argparse
@@ -72,18 +72,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--yolo", default="ratio3_e100")
-    ap.add_argument("--golden", action="store_true")
+    ap.add_argument("--reference", action="store_true")
     args = ap.parse_args()
     from ultralytics import YOLO
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
-    out = ROOT / "results" / ("monitor_golden" if args.golden else "monitor")
+    out = ROOT / "results" / ("monitor_reference" if args.reference else "monitor")
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng([cfg["seed"], SEED_OFFSET])
 
     model = YOLO(str(weights_path(args.yolo)))
     thr = json.load(open(ROOT / f"results/yolo_{args.yolo}/metrics.json", encoding="utf-8"))["thresholds"]["F1최대"]
-    spec = pd.read_csv(ROOT / "results/testpiece/spec.csv")
+    # 시험편 진하기는 val 테스트피스 사양에서 정한다 (시험 사진으로 만든 사양을 설계값에 쓰지 않는다)
+    spec = pd.read_csv(ROOT / f"results/testpiece_val_{args.yolo}/spec.csv")
     spec = spec[(spec["model"] == "YOLO") & (spec["d"] == PIECE_D)].set_index("machine")["min_c0"]
     man = pd.read_csv(data / "manifest.csv").set_index("id")
     srcs = sorted(p.stem for p in (data / "normal" / "test").glob("*.png"))
@@ -93,13 +94,13 @@ def main():
         pm = product_mask(g)
         pms[s] = np.nonzero(band_mask(g, pm) & (pm > 0))
 
-    golds = []
-    if args.golden:
-        gd = pd.read_csv(ROOT / "results/golden/golden.csv")
+    refs = []
+    if args.reference:
+        gd = pd.read_csv(ROOT / "results/reference/reference.csv")
         for r in gd.itertuples():
             g = np.asarray(Image.open(r.path).convert("L"))
             pm = product_mask(g)
-            golds.append(dict(g=g, m=int(r.machine), band=np.nonzero(band_mask(g, pm) & (pm > 0)), pm=pm > 0))
+            refs.append(dict(g=g, m=int(r.machine), band=np.nonzero(band_mask(g, pm) & (pm > 0)), pm=pm > 0))
 
     def noise_level(g, pm):
         f = g.astype(np.float32)
@@ -116,12 +117,12 @@ def main():
         m = int(man.loc[s, "machine"])
         f = base[s].astype(np.float32)
         piece = None
-        gold = None
-        if args.golden and i % EVERY == EVERY - 1:      # 점검 사진 = 골든 사진 (순서대로 돌아가며)
-            gold = golds[(i // EVERY) % len(golds)]
-            m, s, f = gold["m"], "golden", gold["g"].astype(np.float32)
+        ref = None
+        if args.reference and i % EVERY == EVERY - 1:   # 점검 사진 = 기준 정상 영상 (순서대로 돌아가며)
+            ref = refs[(i // EVERY) % len(refs)]
+            m, s, f = ref["m"], "reference", ref["g"].astype(np.float32)
         if i % EVERY == EVERY - 1:
-            ys, xs = gold["band"] if gold else pms[s]
+            ys, xs = ref["band"] if ref else pms[s]
             k = rng.integers(len(xs))
             cx, cy = xs[k] + rng.random(), ys[k] + rng.random()
             c0 = float(spec.get(m, 0.30)) if pd.notna(spec.get(m, np.nan)) else 0.30
@@ -138,8 +139,8 @@ def main():
             n_other = int((~near).sum())
         rows.append(dict(frame=i, src=s, machine=m, level=round(lv, 4), piece=piece is not None,
                          c0=piece[2] if piece else None, hit=hit, other_alarms=n_other,
-                         g_noise=noise_level(g, gold["pm"]) if gold else None,
-                         g_id=(i // EVERY) % len(golds) if gold else None))
+                         g_noise=noise_level(g, ref["pm"]) if ref else None,
+                         g_id=(i // EVERY) % len(refs) if ref else None))
     tl = pd.DataFrame(rows)
     p = tl[tl["piece"]].copy()
     p["rolling"] = p["hit"].astype(float).rolling(WINDOW).mean()
@@ -155,8 +156,8 @@ def main():
     first = int(alarm["frame"].iloc[0]) if len(alarm) else None
     pre = p[(p["count"] < lcl) & full & (p["frame"] < CALIB)]
     drift_first, pre_drift = None, None
-    if args.golden:
-        # 표류 지표: 같은 골든 사진의 잡음 수준이 초기 구간 평균에서 3σ 넘게 벗어나면 (골든 사진마다 기준을 따로 잡는다)
+    if args.reference:
+        # 표류 지표: 같은 기준 정상 영상의 잡음 수준이 초기 구간 평균에서 3σ 넘게 벗어나면 (영상마다 기준을 따로 잡는다)
         cal = p[p["frame"] < CALIB].groupby("g_id")["g_noise"].agg(["mean", "std"])
         p["g_z"] = (p["g_noise"] - p["g_id"].map(cal["mean"])) / p["g_id"].map(cal["std"]).clip(lower=1e-3)
         out_z = p[(p["frame"] >= CALIB) & (p["g_z"].abs() > 3)]

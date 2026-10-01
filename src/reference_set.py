@@ -1,4 +1,6 @@
-"""골든 세트: 호기별로 '가장 정상에 가까운' 가짜 정상 사진 N장을 고른다 (운영 중 점검의 기준 사진).
+"""기준 정상 영상: 호기별로 '가장 정상에 가까운' 가짜 정상 사진 N장을 고른다 (운영 중 점검의 기준 사진).
+
+제조 현장의 골든 샘플·골든 이미지와 같은 역할이지만, 실물 양품으로 확인된 사진은 아니다(이물을 지운 가짜 정상).
 
 정상 사진이 없어 val 가짜 정상(이물 점만 지운 사진, normal_set.py)에서 고른다. test 는 기준 결정에 쓰지 않는다.
   1. 라벨 누락 의심 사진(judge.py suspects.csv, 정상인데 불합격선 이상) 제외
@@ -6,8 +8,8 @@
   3. 남은 사진 중 최종 모델 최고 점수가 낮은 순으로 N장
 한 장으로는 정상의 흔들림을 알 수 없어 호기마다 여러 장을 고른다.
 
-실행: .venv\\Scripts\\python.exe src\\golden_set.py --yolo ratio3_e100
-결과: results/golden/ (golden.csv, thumbs.png)
+실행: .venv\\Scripts\\python.exe src\\reference_set.py --yolo ratio3_e100
+결과: results/reference/ (reference.csv, thumbs.png)
 """
 import argparse
 from pathlib import Path
@@ -26,7 +28,7 @@ def main():
     ap.add_argument("--yolo", default="ratio3_e100")
     ap.add_argument("--n", type=int, default=N_PER)
     args = ap.parse_args()
-    out = ROOT / "results" / "golden"
+    out = ROOT / "results" / "reference"
     out.mkdir(parents=True, exist_ok=True)
 
     sc = pd.read_csv(ROOT / "results/judge/scores_val.csv")
@@ -40,16 +42,16 @@ def main():
     sc["지운자리_최대대비"] = sc["src"].map(er)
     sc["의심"] = sc["img"].isin(bad)
     ok = sc[~sc["의심"] & (sc["지운자리_최대대비"] < real_min)]
-    gold = (ok.sort_values(args.yolo).groupby("machine", group_keys=False).head(args.n)
+    ref = (ok.sort_values(args.yolo).groupby("machine", group_keys=False).head(args.n)
               .sort_values(["machine", args.yolo]))
-    gold = gold[["img", "src", "machine", "path", args.yolo, "지운자리_최대대비"]].rename(columns={args.yolo: "최고점수"})
-    gold.to_csv(out / "golden.csv", index=False, encoding="utf-8-sig")
-    print(f"후보 {len(sc)}장 → 의심 제외 {int(sc['의심'].sum())}장, 지운 흔적 기준 통과 {len(ok)}장 → 골든 {len(gold)}장")
-    print(gold.round(4).to_string(index=False))
+    ref = ref[["img", "src", "machine", "path", args.yolo, "지운자리_최대대비"]].rename(columns={args.yolo: "최고점수"})
+    ref.to_csv(out / "reference.csv", index=False, encoding="utf-8-sig")
+    print(f"후보 {len(sc)}장 → 의심 제외 {int(sc['의심'].sum())}장, 지운 흔적 기준 통과 {len(ok)}장 → 기준 정상 영상 {len(ref)}장")
+    print(ref.round(4).to_string(index=False))
 
-    # 썸네일: 행 = 호기, 열 = 골든 사진 (제품 부분만, 높이 맞춤)
+    # 썸네일: 행 = 호기, 열 = 기준 정상 영상 (제품 부분만, 높이 맞춤)
     rows = []
-    for m, g in gold.groupby("machine"):
+    for m, g in ref.groupby("machine"):
         tiles = []
         for p in g["path"]:
             a = np.asarray(Image.open(p).convert("L"))

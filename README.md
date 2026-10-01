@@ -57,8 +57,11 @@ python run_all.py --from judge       # 특정 단계부터 이어서
 | spec_val | `src/testpiece.py --split val` | 판정 기준선용 검출 사양을 val 가짜 정상으로 산출 | `results/testpiece_val_<이름>` |
 | testpiece | `src/testpiece.py` | 가상 테스트피스: 가짜 정상 사진에 크기 4종 × 진하기 8종 시험편을 칸당 150개씩 넣어 호기별 검출 사양(90% 보장 진하기) 산출 | `data/testpiece`, `results/testpiece` |
 | ensemble | `src/ensemble.py` | YOLO + CNN 뒤집기 TTA 앙상블 판정과 흔들림 기반 재검사 비교 (val에서만 선택) | `results/ensemble` |
-| golden | `src/golden_set.py` | 호기별로 가장 깨끗한 val 가짜 정상 5장 (운영 점검 기준 사진) | `results/golden` |
-| monitor | `src/monitor.py` | 운영 중 상시 점검 모의 시연: 생산 흐름에 시험편을 섞고, 가정한 장비 열화에서 경보 시점 확인. `--golden`은 골든 사진 위 시험편 + 잡음 표류 지표 | `results/monitor`, `results/monitor_golden` |
+| reference | `src/reference_set.py` | 기준 정상 영상: 호기별로 가장 깨끗한 val 가짜 정상 5장 (운영 점검 기준 사진, 골든 샘플 역할이나 실물 양품은 아님) | `results/reference` |
+| monitor | `src/monitor.py` | 운영 중 상시 점검 모의 시연: 생산 흐름에 시험편을 섞고, 가정한 장비 열화에서 경보 시점 확인. `--reference`는 기준 정상 영상 위 시험편 + 잡음 표류 지표 | `results/monitor`, `results/monitor_reference` |
+| cusum | `src/monitor_cusum.py` | 상시 점검 경보 규칙 비교: 최근 20개 창 vs 베르누이 CUSUM (평상시 오경보 간격을 같게 맞춤) | `results/monitor_cusum` |
+| diagnose | `src/diagnose.py` | 장비 고장 vs AI 고장 원인 분리: 기준 정상 영상 고정 자리 시험편의 CNR·영상 잡음(영상별 기준값) 감시 | `results/diagnose` |
+| realism | `src/realism.py` | 시험편 현실성: 같은 자리 실제 이물 vs 합성(구·칸 정렬 네모) 조각의 구분력 AUC | `results/realism` |
 | shortcut | `src/shortcut_test.py` | 색 표시 지름길 검증 (`--all-experiments` 때) | `results/shortcut` |
 | gradcam | `src/gradcam.py` | HiResCAM으로 원본 학습·정제본 학습 모델의 판단 근거 위치 비교 (`--all-experiments` 때) | `results/gradcam` |
 

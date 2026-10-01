@@ -57,7 +57,8 @@ python run_all.py --from judge       # 특정 단계부터 이어서
 | spec_val | `src/testpiece.py --split val` | 판정 기준선용 검출 사양을 val 가짜 정상으로 산출 | `results/testpiece_val_<이름>` |
 | testpiece | `src/testpiece.py` | 가상 테스트피스: 가짜 정상 사진에 크기 4종 × 진하기 8종 시험편을 칸당 150개씩 넣어 호기별 검출 사양(90% 보장 진하기) 산출 | `data/testpiece`, `results/testpiece` |
 | ensemble | `src/ensemble.py` | YOLO + CNN 뒤집기 TTA 앙상블 판정과 흔들림 기반 재검사 비교 (val에서만 선택) | `results/ensemble` |
-| monitor | `src/monitor.py` | 운영 중 상시 점검 모의 시연: 생산 흐름에 시험편을 섞고, 가정한 장비 열화에서 경보 시점 확인 | `results/monitor` |
+| golden | `src/golden_set.py` | 호기별로 가장 깨끗한 val 가짜 정상 5장 (운영 점검 기준 사진) | `results/golden` |
+| monitor | `src/monitor.py` | 운영 중 상시 점검 모의 시연: 생산 흐름에 시험편을 섞고, 가정한 장비 열화에서 경보 시점 확인. `--golden`은 골든 사진 위 시험편 + 잡음 표류 지표 | `results/monitor`, `results/monitor_golden` |
 | shortcut | `src/shortcut_test.py` | 색 표시 지름길 검증 (`--all-experiments` 때) | `results/shortcut` |
 | gradcam | `src/gradcam.py` | HiResCAM으로 원본 학습·정제본 학습 모델의 판단 근거 위치 비교 (`--all-experiments` 때) | `results/gradcam` |
 

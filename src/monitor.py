@@ -14,7 +14,11 @@ AI에 보여 주고 잡는지 기록하면, 장비나 AI가 조용히 무뎌지�
     이항분포에서 평상시 우연히 그 아래로 떨어질 확률이 FALSE_ALARM 이하가 되는 수 (관리도 방식)
   - 대조: 가장 심한 열화를 실제 불량 시험 사진 73장에 걸었을 때 실제 이물 재현율 (점검이 없으면 모르고 지나갈 손실)
 
-실행: .venv\\Scripts\\python.exe src\\monitor.py --yolo ratio3_e100
+  --golden: 시험편을 생산 사진 대신 골든 세트(golden_set.py, 호기별로 가장 깨끗한 val 가짜 정상)에만 넣는다.
+    배경이 고정돼 사진 차이로 인한 흔들림이 줄어드는지, 그리고 골든 사진의 잡음 수준(표류 지표)으로
+    장비 변화를 더 일찍 알 수 있는지 본다. 결과는 results/monitor_golden/.
+
+실행: .venv\\Scripts\\python.exe src\\monitor.py --yolo ratio3_e100 [--golden]
 결과: results/monitor/ (timeline.csv, summary.json, timeline.png)
 """
 import argparse
@@ -68,11 +72,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--yolo", default="ratio3_e100")
+    ap.add_argument("--golden", action="store_true")
     args = ap.parse_args()
     from ultralytics import YOLO
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
-    out = ROOT / "results" / "monitor"
+    out = ROOT / "results" / ("monitor_golden" if args.golden else "monitor")
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng([cfg["seed"], SEED_OFFSET])
 
@@ -88,6 +93,18 @@ def main():
         pm = product_mask(g)
         pms[s] = np.nonzero(band_mask(g, pm) & (pm > 0))
 
+    golds = []
+    if args.golden:
+        gd = pd.read_csv(ROOT / "results/golden/golden.csv")
+        for r in gd.itertuples():
+            g = np.asarray(Image.open(r.path).convert("L"))
+            pm = product_mask(g)
+            golds.append(dict(g=g, m=int(r.machine), band=np.nonzero(band_mask(g, pm) & (pm > 0)), pm=pm > 0))
+
+    def noise_level(g, pm):
+        f = g.astype(np.float32)
+        return float((f - cv2.GaussianBlur(f, (0, 0), 2))[pm].std())
+
     def detect(g):
         r = model.predict(cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), imgsz=640, conf=thr, max_det=100, verbose=False)[0]
         b = r.boxes.xyxy.cpu().numpy()
@@ -99,8 +116,12 @@ def main():
         m = int(man.loc[s, "machine"])
         f = base[s].astype(np.float32)
         piece = None
+        gold = None
+        if args.golden and i % EVERY == EVERY - 1:      # 점검 사진 = 골든 사진 (순서대로 돌아가며)
+            gold = golds[(i // EVERY) % len(golds)]
+            m, s, f = gold["m"], "golden", gold["g"].astype(np.float32)
         if i % EVERY == EVERY - 1:
-            ys, xs = pms[s]
+            ys, xs = gold["band"] if gold else pms[s]
             k = rng.integers(len(xs))
             cx, cy = xs[k] + rng.random(), ys[k] + rng.random()
             c0 = float(spec.get(m, 0.30)) if pd.notna(spec.get(m, np.nan)) else 0.30
@@ -116,7 +137,9 @@ def main():
             hit = bool(near.any())
             n_other = int((~near).sum())
         rows.append(dict(frame=i, src=s, machine=m, level=round(lv, 4), piece=piece is not None,
-                         c0=piece[2] if piece else None, hit=hit, other_alarms=n_other))
+                         c0=piece[2] if piece else None, hit=hit, other_alarms=n_other,
+                         g_noise=noise_level(g, gold["pm"]) if gold else None,
+                         g_id=(i // EVERY) % len(golds) if gold else None))
     tl = pd.DataFrame(rows)
     p = tl[tl["piece"]].copy()
     p["rolling"] = p["hit"].astype(float).rolling(WINDOW).mean()
@@ -131,6 +154,14 @@ def main():
     alarm = p[(p["count"] < lcl) & full & (p["frame"] >= CALIB)]
     first = int(alarm["frame"].iloc[0]) if len(alarm) else None
     pre = p[(p["count"] < lcl) & full & (p["frame"] < CALIB)]
+    drift_first, pre_drift = None, None
+    if args.golden:
+        # 표류 지표: 같은 골든 사진의 잡음 수준이 초기 구간 평균에서 3σ 넘게 벗어나면 (골든 사진마다 기준을 따로 잡는다)
+        cal = p[p["frame"] < CALIB].groupby("g_id")["g_noise"].agg(["mean", "std"])
+        p["g_z"] = (p["g_noise"] - p["g_id"].map(cal["mean"])) / p["g_id"].map(cal["std"]).clip(lower=1e-3)
+        out_z = p[(p["frame"] >= CALIB) & (p["g_z"].abs() > 3)]
+        drift_first = int(out_z["frame"].iloc[0]) if len(out_z) else None
+        pre_drift = int(((p["frame"] < CALIB) & (p["g_z"].abs() > 3)).sum())
 
     # 대조: 가장 심한 열화에서 실제 불량 사진의 실제 이물 재현율
     tm = man[man["labeled"] & (man["split"] == "test")]
@@ -148,7 +179,7 @@ def main():
 
     curve = {round(lv, 2): real_recall(lv)["recall"] for lv in tqdm(np.linspace(0, 1, 11), desc="열화별 재현율")}
     rec = {}
-    for tag, fr in [("경보 시점", first)]:
+    for tag, fr in [("경보 시점", first), ("표류 경보 시점", drift_first)]:
         if fr is not None:
             ev = real_recall(level_at(fr))
             rec[tag] = {"프레임": fr, "열화수준": round(level_at(fr), 3), "재현율": ev["recall"], "놓침": ev["FN"]}
@@ -162,6 +193,9 @@ def main():
                "첫_경보_프레임": first, "경보까지_지연_프레임": (first - DEGRADE_FROM) if first else None,
                "경보_시점_열화수준": round(level_at(first), 3) if first else None,
                "열화수준별_실제재현율": curve,
+               "표류_첫경보_프레임": drift_first,
+               "표류_경보_열화수준": round(level_at(drift_first), 3) if drift_first else None,
+               "표류_초기구간_경보수": pre_drift,
                "열화전_정상부위_헛경보_영상당": round(float(tl[tl["frame"] < DEGRADE_FROM]["other_alarms"].mean()), 4),
                "경보시점_실제불량": rec}
     json.dump(summary, open(out / "summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2, default=float)

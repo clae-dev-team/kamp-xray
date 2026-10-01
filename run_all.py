@@ -20,7 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
-          "judge", "predict", "synth_eval", "location", "testpiece", "ensemble", "monitor", "shortcut", "gradcam"]
+          "judge", "predict", "synth_eval", "location", "testpiece", "ensemble", "golden", "monitor", "shortcut", "gradcam"]
 
 
 def sh(*args, log=None):
@@ -104,7 +104,9 @@ def main():
     stage("testpiece", lambda: sh("src/testpiece.py", "--yolo", final["name"], "--cnn", cnn_name, log="testpiece.log"))
     if cnn:
         stage("ensemble", lambda: sh("src/ensemble.py", "--yolo", final["name"], "--cnn", cnn_name, log="ensemble.log"))
-    stage("monitor", lambda: sh("src/monitor.py", "--yolo", final["name"], log="monitor.log"))
+    stage("golden", lambda: sh("src/golden_set.py", "--yolo", final["name"], log="golden_set.log"))
+    stage("monitor", lambda: (sh("src/monitor.py", "--yolo", final["name"], log="monitor.log"),
+                              sh("src/monitor.py", "--yolo", final["name"], "--golden", log="monitor_golden.log")))
     if any(e.get("variant") == "raw" for e in exps):
         stage("shortcut", lambda: sh("src/shortcut_test.py", "--clean", final["name"], "--raw", "y26s_640_raw",
                                      log="shortcut.log"))

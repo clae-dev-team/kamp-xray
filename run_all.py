@@ -103,7 +103,9 @@ def main():
     stage("location", lambda: [sh("src/location_test.py", "--yolo", m, log=f"location_{m}.log") for m in models])
     cnn_name = cnn["name"] if cnn else "cnn_aug"
     stage("testpiece", lambda: sh("src/testpiece.py", "--yolo", final["name"], "--cnn", cnn_name, log="testpiece.log"))
-    stage("froc", lambda: sh("src/froc.py", "--final", final["name"], "--models", "베이스라인", cnn_name, "y26s_640", final["name"], log="froc.log"))
+    # 합성 전 YOLO(y26s_640)는 --all-experiments 일 때만 학습되므로 있을 때만 비교에 넣는다
+    froc_models = ["베이스라인"] + ([cnn_name] if cnn else []) + (["y26s_640"] if any(e["name"] == "y26s_640" for e in exps) else []) + [final["name"]]
+    stage("froc", lambda: sh("src/froc.py", "--final", final["name"], "--models", *froc_models, log="froc.log"))
     stage("conditions", lambda: sh("src/conditions.py", "--yolo", final["name"], log="conditions.log"))
     if cnn:
         stage("ensemble", lambda: sh("src/ensemble.py", "--yolo", final["name"], "--cnn", cnn_name, log="ensemble.log"))

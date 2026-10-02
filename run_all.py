@@ -20,7 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
-          "judge", "predict", "synth_eval", "location", "testpiece", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
+          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
 
 
 def sh(*args, log=None):
@@ -97,6 +97,7 @@ def main():
     stage("spec_val", lambda: [sh("src/testpiece.py", "--split", "val", "--models", "YOLO", "--yolo", m,
                                   log=f"testpiece_val_{m}.log") for m in yolo_models])
     stage("judge", lambda: sh("src/judge.py", "--yolo", *models, log="judge.log"))
+    stage("risk", lambda: sh("src/risk_threshold.py", "--yolo", final["name"], log="risk_threshold.log"))
     stage("predict", lambda: sh("src/predict.py", "--name", final["name"], log="predict.log"))
     stage("synth_eval", lambda: [sh("src/synth_eval.py", "--yolo", m, log=f"synth_eval_{m}.log") for m in models])
     stage("location", lambda: [sh("src/location_test.py", "--yolo", m, log=f"location_{m}.log") for m in models])

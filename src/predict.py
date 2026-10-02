@@ -51,8 +51,8 @@ def main():
     ap.add_argument("--name", default="ratio3_e100")
     ap.add_argument("--split", default="test")
     ap.add_argument("--unlabeled", action="store_true")
-    ap.add_argument("--policy", default="spec", choices=["spec", "all"],
-                    help="spec = 검출 사양 이상 이물 기준 기준선(권장), all = val 불량 전체 99% 기준 (이전 방식)")
+    ap.add_argument("--policy", default="guarantee", choices=["guarantee", "spec", "all"],
+                    help="guarantee = 보장 기준선(risk_threshold.py, 권장) / spec = 사양 기준(최약 불량 점수) / all = val 불량 전체 99%")
     args = ap.parse_args()
     from ultralytics import YOLO
 
@@ -61,8 +61,14 @@ def main():
     out = ROOT / "results" / "submission"
     (out / "labels").mkdir(parents=True, exist_ok=True)
     js = json.load(open(ROOT / "results/judge/summary.json", encoding="utf-8"))[args.name]
-    policy = "사양기준" if (args.policy == "spec" and "사양기준" in js) else "불량전체99"
-    th = js["사양기준"]["기준선"] if policy == "사양기준" else js["기준선"]
+    rf = ROOT / "results/risk_threshold/summary.json"
+    rk = json.load(open(rf, encoding="utf-8")).get("채택") if rf.exists() else None
+    if args.policy == "guarantee" and rk and rk.get("모델") == args.name:
+        policy, th = "보장기준", rk
+    elif args.policy in ("guarantee", "spec") and "사양기준" in js:
+        policy, th = "사양기준", js["사양기준"]["기준선"]
+    else:
+        policy, th = "불량전체99", js["기준선"]
     t_low, t_high = th["합격선"], th["불합격선"]
     model = YOLO(str(weights_path(args.name)))
 
@@ -80,7 +86,8 @@ def main():
         (out / "labels" / f"{i}.txt").write_text("", encoding="utf-8")        # 합격 영상은 빈 파일
     json.dump({"model": args.name, "weights": str(weights_path(args.name).relative_to(ROOT)),
                "합격선": t_low, "불합격선": t_high, "기준선_방식": policy,
-               "기준선_출처": "results/judge/summary.json (val에서 결정)"},
+               "기준선_출처": "results/risk_threshold/summary.json" if policy == "보장기준" else "results/judge/summary.json",
+               "보장": th.get("보장") if policy == "보장기준" else None},
               open(out / "thresholds.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print(images["판정"].value_counts().to_dict(), "박스", len(boxes))
 

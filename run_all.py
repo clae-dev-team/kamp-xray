@@ -20,7 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
-          "judge", "predict", "synth_eval", "location", "testpiece", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "gradcam"]
+          "judge", "predict", "synth_eval", "location", "testpiece", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
 
 
 def sh(*args, log=None):
@@ -113,6 +113,7 @@ def main():
     if any(e.get("variant") == "raw" for e in exps):
         stage("shortcut", lambda: sh("src/shortcut_test.py", "--clean", final["name"], "--raw", "y26s_640_raw",
                                      log="shortcut.log"))
+        stage("bait_gray", lambda: sh("src/bait_gray.py", "--models", final["name"], "y26s_640", log="bait_gray.log"))
         stage("gradcam", lambda: sh("src/gradcam.py", "--clean", final["name"], "--raw", "y26s_640_raw",
                                     log="gradcam.log"))
 

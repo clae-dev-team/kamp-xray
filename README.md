@@ -63,6 +63,7 @@ python run_all.py --from judge       # 특정 단계부터 이어서
 | diagnose | `src/diagnose.py` | 장비 고장 vs AI 고장 원인 분리: 기준 정상 영상 고정 자리 시험편의 CNR·영상 잡음(영상별 기준값) 감시 | `results/diagnose` |
 | realism | `src/realism.py` | 시험편 현실성: 같은 자리 실제 이물 vs 합성(구·칸 정렬 네모) 조각의 구분력 AUC | `results/realism` |
 | shortcut | `src/shortcut_test.py` | 색 표시 지름길 검증 (`--all-experiments` 때) | `results/shortcut` |
+| bait_gray | `src/bait_gray.py` | 미끼 원인 가리기: 같은 자리 미끼 네모를 색 · 같은 밝기 회색 · 어두운 회색(×0.6) · 밝은 회색(×1.3)으로 바꿔 반응률 비교 (`--all-experiments` 때) | `results/bait_gray` |
 | gradcam | `src/gradcam.py` | HiResCAM으로 원본 학습·정제본 학습 모델의 판단 근거 위치 비교 (`--all-experiments` 때) | `results/gradcam` |
 
 평가 기준은 `src/metrics.py` 하나로 모든 모델에 똑같이 적용합니다 (박스 중심 일치 기준 + IoU 0.5 기준).

@@ -113,7 +113,9 @@ def main():
     stage("monitor", lambda: (sh("src/monitor.py", "--yolo", final["name"], log="monitor.log"),
                               sh("src/monitor.py", "--yolo", final["name"], "--reference", log="monitor_reference.log")))
     stage("cusum", lambda: sh("src/monitor_cusum.py", log="monitor_cusum.log"))
-    stage("diagnose", lambda: sh("src/diagnose.py", "--yolo", final["name"], log="diagnose.log"))
+    # 장비/AI 원인 가리기의 'AI 고장' 모의는 합성 0배 모델(ratio0_e100)을 잘못 올린 상황이라 --all-experiments 에서만 돈다
+    if any(e["name"] == "ratio0_e100" for e in exps):
+        stage("diagnose", lambda: sh("src/diagnose.py", "--yolo", final["name"], "--bad", "ratio0_e100", log="diagnose.log"))
     stage("realism", lambda: sh("src/realism.py", log="realism.log"))
     if any(e.get("variant") == "raw" for e in exps):
         stage("shortcut", lambda: sh("src/shortcut_test.py", "--clean", final["name"], "--raw", "y26s_640_raw",

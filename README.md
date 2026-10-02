@@ -63,7 +63,7 @@ python run_all.py --from judge       # 특정 단계부터 이어서
 | reference | `src/reference_set.py` | 기준 정상 영상: 호기별로 가장 깨끗한 val 가짜 정상 5장 (운영 점검 기준 사진, 골든 샘플 역할이나 실물 양품은 아님) | `results/reference` |
 | monitor | `src/monitor.py` | 운영 중 상시 점검 모의 시연: 생산 흐름에 시험편을 섞고, 가정한 장비 열화에서 경보 시점 확인. `--reference`는 기준 정상 영상 위 시험편 + 잡음 표류 지표 | `results/monitor`, `results/monitor_reference` |
 | cusum | `src/monitor_cusum.py` | 상시 점검 경보 규칙 비교: 최근 20개 창 vs 베르누이 CUSUM (평상시 오경보 간격을 같게 맞춤) | `results/monitor_cusum` |
-| diagnose | `src/diagnose.py` | 장비 고장 vs AI 고장 원인 분리: 기준 정상 영상 고정 자리 시험편의 CNR·영상 잡음(영상별 기준값) 감시 | `results/diagnose` |
+| diagnose | `src/diagnose.py` | 장비 고장 vs AI 고장 원인 분리: 기준 정상 영상 고정 자리 시험편의 CNR·영상 잡음(영상별 기준값) 감시 (`--all-experiments` 때, AI 고장 역할에 합성 0배 모델 사용) | `results/diagnose` |
 | realism | `src/realism.py` | 시험편 현실성: 같은 자리 실제 이물 vs 합성(구·칸 정렬 네모) 조각의 구분력 AUC | `results/realism` |
 | shortcut | `src/shortcut_test.py` | 색 표시 지름길 검증 (`--all-experiments` 때) | `results/shortcut` |
 | bait_gray | `src/bait_gray.py` | 미끼 원인 가리기: 같은 자리 미끼 네모를 색 · 같은 밝기 회색 · 어두운 회색(×0.6) · 밝은 회색(×1.3)으로 바꿔 반응률 비교 (`--all-experiments` 때) | `results/bait_gray` |

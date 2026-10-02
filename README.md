@@ -15,6 +15,19 @@ pip install -r requirements.txt
 
 `requirements.lock.txt`에 실험에 쓴 전체 패키지 버전이 기록되어 있습니다.
 
+## 재현성 확인 (2026-10-03)
+
+GitHub에서 새로 받은 저장소와 새 가상환경(`requirements.txt`)으로 `python run_all.py`를 처음부터 다시 돌려, 원래 작업 폴더의 결과와 비교했습니다.
+
+```bash
+python src/repro_check.py --a <원래 폴더> --b <다시 돌린 폴더>   # 결과: <다시 돌린 폴더>/results/repro_check/
+```
+
+- 데이터: 분할 목록 · 정제 사진 2,532장 · 라벨 500개 · 합성 3,507개 · 가짜 정상 150장 · 시험편 7,204개 파일이 모두 바이트 단위로 같음 (목록 파일의 실행 폴더 경로는 정규화)
+- 결과: 최종 YOLO 재학습을 포함해 결과 요약 17개 파일의 숫자 1,158개가 모두 같음 (시험 F1 0.9929, 보장 합격선 0.6128 등)
+- 제출 파일: 시험 사진 73장의 판정(재검사 72 · 불합격 1)과 박스 141개가 같음
+- 같은 GPU · 드라이버 · 패키지 버전(`requirements.lock.txt`)에서 확인한 결과이며, 다른 GPU에서는 학습 계산 순서 차이로 소수점 아래가 달라질 수 있습니다.
+
 ## 데이터
 
 KAMP에서 받은 X-ray 검사장비 AI 데이터셋을 사용합니다. 원본 경로는 `configs/data.yaml`의 `raw_root`, `label_dir`에서 지정합니다.
@@ -23,7 +36,7 @@ KAMP에서 받은 X-ray 검사장비 AI 데이터셋을 사용합니다. 원본 
 ## 한 번에 실행
 
 ```bash
-python run_all.py                    # 전처리 → 베이스라인 → 합성 증강 → 최종 모델 학습 → 판정 → 제출 파일 (GPU 약 1시간)
+python run_all.py                    # 전처리 → 베이스라인 → 합성 증강 → 최종 모델 학습 → 판정 → 제출 파일 (RTX 5060 Laptop 실측 약 1시간 20분)
 python run_all.py --skip-train       # 학습 없이 runs/ 의 가중치로 나머지 전부 다시 생성 (약 15분)
 python run_all.py --all-experiments  # 보고서의 비교 모델까지 모두 다시 학습 (약 3~4시간)
 python run_all.py --from judge       # 특정 단계부터 이어서

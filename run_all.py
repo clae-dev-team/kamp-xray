@@ -1,6 +1,6 @@
 """전처리부터 학습·추론·결과 생성까지 한 번에 실행한다.
 
-  python run_all.py                    # 기본: 최종 모델까지 학습하고 모든 평가·제출 파일 생성 (GPU 약 1시간)
+  python run_all.py                    # 기본: 최종 모델까지 학습하고 모든 평가·제출 파일 생성 (RTX 5060 Laptop 실측 약 1시간 20분)
   python run_all.py --skip-train       # 학습은 건너뛰고 저장된 가중치로 평가·제출 파일만 다시 생성 (약 15분)
   python run_all.py --all-experiments  # 보고서의 비교 모델까지 모두 다시 학습 (약 3~4시간)
   python run_all.py --from judge       # 특정 단계부터 이어서

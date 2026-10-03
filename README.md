@@ -90,6 +90,7 @@ python run_all.py --from judge       # 특정 단계부터 이어서
 | testpiece | `src/testpiece.py` | 가상 테스트피스: 가짜 정상 사진에 크기 4종 × 진하기 8종 시험편을 칸당 150개씩 넣어 호기별 검출 사양(90% 보장 진하기) 산출 | `data/testpiece`, `results/testpiece` |
 | froc | `src/froc.py` | FROC(사진 한 장당 헛경보 수별 이물 검출률)과 CPM(LUNA16 방식 7점 평균): 실제 이물 139개 · 가상 시험편 14,400개, 규칙 기반 · CNN · 합성 전/최종 YOLO 비교 | `results/froc` |
 | conditions | `src/conditions.py` | 놓침·헛경보 조건 정리: 시험편 놓침을 대비·지름·호기·띠·주변 결로 나눠 보고(로지스틱 회귀·결정나무), 헛경보는 원본 사진의 고유 자리 기준으로 지운 자리·가장자리·띠와 비교 | `results/conditions` |
+| miss_risk | `src/miss_risk.py` | 놓침 위험 지도: 검증 시험편으로 놓침 모형(대비·지름·띠·가장자리·주변 결·밝기·호기)을 만들고, 사진마다 "옅은 이물이 있었다면 놓쳤을 구역"을 표시. 시험 시험편으로 검증(같은 세기에서 위치 정보만으로 AUC 0.81, 제품 면적 11%에 놓침 46%), 사진별 리포트 | `results/miss_risk` |
 | ensemble | `src/ensemble.py` | YOLO + CNN 뒤집기 TTA 앙상블 판정과 흔들림 기반 재검사 비교 (val에서만 선택) | `results/ensemble` |
 | reference | `src/reference_set.py` | 기준 정상 영상: 호기별로 가장 깨끗한 val 가짜 정상 5장 (운영 점검 기준 사진, 골든 샘플 역할이나 실물 양품은 아님) | `results/reference` |
 | monitor | `src/monitor.py` | 운영 중 상시 점검 모의 시연: 생산 흐름에 시험편을 섞고, 가정한 장비 열화에서 경보 시점 확인. `--reference`는 기준 정상 영상 위 시험편 + 잡음 표류 지표 | `results/monitor`, `results/monitor_reference` |

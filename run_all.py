@@ -20,7 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
-          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
+          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
 
 
 def sh(*args, log=None):
@@ -107,6 +107,7 @@ def main():
     froc_models = ["베이스라인"] + ([cnn_name] if cnn else []) + (["y26s_640"] if any(e["name"] == "y26s_640" for e in exps) else []) + [final["name"]]
     stage("froc", lambda: sh("src/froc.py", "--final", final["name"], "--models", *froc_models, log="froc.log"))
     stage("conditions", lambda: sh("src/conditions.py", "--yolo", final["name"], log="conditions.log"))
+    stage("miss_risk", lambda: sh("src/miss_risk.py", "--yolo", final["name"], log="miss_risk.log"))
     if cnn:
         stage("ensemble", lambda: sh("src/ensemble.py", "--yolo", final["name"], "--cnn", cnn_name, log="ensemble.log"))
     stage("reference", lambda: sh("src/reference_set.py", "--yolo", final["name"], log="reference_set.log"))

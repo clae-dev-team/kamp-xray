@@ -15,6 +15,24 @@ pip install -r requirements.txt
 
 `requirements.lock.txt`에 실험에 쓴 전체 패키지 버전이 기록되어 있습니다.
 
+## 추론 속도 (선택, 2026-10-04)
+
+같은 최종 모델을 여러 실행 형식으로 돌려 한 장당 시간을 재고, 시험 판정 세트 438장의 판정이 바뀌지 않는지 확인합니다(`src/speed.py`, 결과 `results/speed`). 추가 패키지가 필요해 `run_all.py`에는 넣지 않았습니다.
+
+```bash
+pip install onnx onnxslim onnxruntime-gpu==1.22.0 tensorrt-cu12   # 1.23 이상 기본판은 CUDA 13 용이라 GPU를 못 잡음
+python src/speed.py --yolo ratio3_e100
+```
+
+| 형식 (RTX 5060 Laptop, 한 장씩) | 한 장 전체 | 그중 추론 | 초당 | 판정 (기준과 같음) |
+|---|---:|---:|---:|---:|
+| PyTorch FP32 GPU (기준) | 21.9 ms | 14.2 ms | 46장 | - |
+| ONNX GPU | 19.9 ms | 11.6 ms | 50장 | 438/438 |
+| **TensorRT FP16 GPU** | **10.0 ms** | **1.4 ms** | **100장** | 438/438 |
+| PyTorch CPU | 129.7 ms | 122.0 ms | 8장 | 438/438 |
+
+모든 형식에서 실제 이물 139개를 모두 찾았습니다. FP16 형식은 점수가 최대 0.018 달라져, 보장 기준선의 흔들림 여유(0.0059, FP32 기준)보다 큽니다. FP16으로 운영하려면 그 형식으로 흔들림을 다시 재야 합니다.
+
 ## 재현성 확인 (2026-10-03)
 
 GitHub에서 새로 받은 저장소와 새 가상환경(`requirements.txt`)으로 `python run_all.py`를 처음부터 다시 돌려, 원래 작업 폴더의 결과와 비교했습니다.

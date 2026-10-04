@@ -88,6 +88,20 @@ def risk_map(model, I, machine):
     return r
 
 
+def fit_risk(data, man, thr, yolo):
+    """val 시험편으로 놓침 모형(전체 · 대비와 지름만)을 맞추고, val 사진 제품 화소 위험의 상위 20% 를 고위험 기준값으로 정한다.
+    zone_rules.py 도 같은 모형을 쓴다."""
+    tv, Xv = defect_table(pd.read_csv(ROOT / f"results/testpiece_val_{yolo}/defects_scored.csv"), data / "normal/val", thr, man)
+    full = Model(Xv, tv.miss.to_numpy())
+    base = Model(Xv[:, :2], tv.miss.to_numpy())                       # 대비 · 지름만
+    vals = []
+    for s in sorted(p.stem for p in (data / "normal/val").glob("*.png")):
+        r = risk_map(full, Img.get(data / "normal/val" / f"{s}.png"), int(man.machine[s]))
+        vals.append(r[~np.isnan(r)])
+    high = float(np.quantile(np.concatenate(vals), HIGH_Q))
+    return full, base, high, tv
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--yolo", default="ratio3_e100")
@@ -99,9 +113,7 @@ def main():
     man = pd.read_csv(data / "manifest.csv").set_index("id")
 
     # 1. 모형 (val)
-    tv, Xv = defect_table(pd.read_csv(ROOT / f"results/testpiece_val_{args.yolo}/defects_scored.csv"), data / "normal/val", thr, man)
-    full = Model(Xv, tv.miss.to_numpy())
-    base = Model(Xv[:, :2], tv.miss.to_numpy())                       # 대비 · 지름만
+    full, base, high, tv = fit_risk(data, man, thr, args.yolo)
     summary = {"합격선": thr, "기준이물": {"지름": REF_D, "측정대비": REF_C},
                "모형_오즈비(1표준편차당)": {f: round(float(np.exp(b)), 3) for f, b in zip(FEATS, full.lr.coef_[0])},
                "val_놓침률": round(float(tv.miss.mean()), 3)}
@@ -109,12 +121,6 @@ def main():
                "절편": float(full.lr.intercept_[0]), "기준이물": [REF_D, REF_C]}, open(out / "model.json", "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
 
-    # 고위험 기준값: val 사진들의 제품 화소 위험 분포 상위 20%
-    vals = []
-    for s in sorted(p.stem for p in (data / "normal/val").glob("*.png")):
-        r = risk_map(full, Img.get(data / "normal/val" / f"{s}.png"), int(man.machine[s]))
-        vals.append(r[~np.isnan(r)])
-    high = float(np.quantile(np.concatenate(vals), HIGH_Q))
     summary["고위험_기준값(val 상위20%)"] = round(high, 4)
 
     # 2. 검증 (test)

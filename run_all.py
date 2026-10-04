@@ -20,7 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
-          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
+          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "zone_rules", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
 
 
 def sh(*args, log=None):
@@ -108,6 +108,7 @@ def main():
     stage("froc", lambda: sh("src/froc.py", "--final", final["name"], "--models", *froc_models, log="froc.log"))
     stage("conditions", lambda: sh("src/conditions.py", "--yolo", final["name"], log="conditions.log"))
     stage("miss_risk", lambda: sh("src/miss_risk.py", "--yolo", final["name"], log="miss_risk.log"))
+    stage("zone_rules", lambda: sh("src/zone_rules.py", "--yolo", final["name"], log="zone_rules.log"))
     if cnn:
         stage("ensemble", lambda: sh("src/ensemble.py", "--yolo", final["name"], "--cnn", cnn_name, log="ensemble.log"))
     stage("reference", lambda: sh("src/reference_set.py", "--yolo", final["name"], log="reference_set.log"))

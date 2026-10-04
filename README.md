@@ -82,7 +82,7 @@ python run_all.py --from judge       # 특정 단계부터 이어서
 | cnn | `src/cnn.py` | 32×32 조각 분류 CNN (비교 모델). 패딩 없는 합성곱이라 영상 전체에 한 번에 적용, 어려운 음성 재수집 | `runs/cnn_aug`, `results/cnn_cnn_aug` |
 | normal_set | `src/normal_set.py` | val·test 이물 점만 지운 가짜 정상 + 합성 불량 | `data/normal`, `data/synth_ng` |
 | judge | `src/judge.py` | 영상 단위 합격/재검사/불합격 기준선과 확률보정(온도 스케일링). 권장 기준선은 "검출 사양 이상 이물은 합격시키지 않는다"(사양 기준) | `results/judge` |
-| risk | `src/risk_threshold.py` | 보장 기준선: 점수 흔들림(묶음 1·8·32 재추론) 측정 + Learn-then-Test 방식으로 놓침률 ≤1%·정상 폐기율 ≤5%를 95% 확률로 보장하는 합격·불합격선 (제출 파일 기본값) | `results/risk_threshold` |
+| risk | `src/risk_threshold.py` | 보장 기준선: 점수 흔들림(묶음 1·8·32 재추론) 측정 + Learn-then-Test 방식으로 놓침률 ≤1%·정상 폐기율 ≤5%를 95% 확률로 보장하는 합격·불합격선 (제출 파일 기본값). 보장은 검증 불량 328개(실제 77 + 합성 251) 기준이며 실제 이물만으로는 3.8%까지, 검증과 같은 분포 가정 | `results/risk_threshold` |
 | predict | `src/predict.py` | 최종 모델로 test 예측, 제출 파일 | `results/submission` |
 | synth_eval | `src/synth_eval.py` | 합성 이물 대비·크기별 검출률 | `results/synth_eval_<이름>` |
 | location | `src/location_test.py` | 실제 이물 자리에서 점 지움·교체 실험 (위치 의존 검증) | `results/location_test_<이름>` |

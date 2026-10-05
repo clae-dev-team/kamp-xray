@@ -31,7 +31,7 @@
   .tally b { font-family: var(--mono); font-weight: 600; font-size: 15px; margin-left: 6px; color: var(--text); }
   .tally .ok b { color: var(--ok); } .tally .hold b { color: var(--hold); } .tally .ng b { color: var(--ng); }
 
-  main { display: grid; grid-template-columns: 292px minmax(0, 1fr) 372px; min-height: 0; }
+  main { display: grid; grid-template-columns: 324px minmax(0, 1fr) 372px; min-height: 0; }
 
   /* 왼쪽: 사진 목록 */
   .list { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
@@ -127,12 +127,85 @@
   .note { font-size: 12.5px; color: var(--faint); margin: 0; }
   .kv { display: grid; grid-template-columns: 1fr auto; row-gap: 6px; font-size: 13px; color: var(--sub); }
   .kv b { font-family: var(--mono); font-weight: 500; color: var(--text); text-align: right; }
+
+  /* 머리줄 단추 */
+  .tools { display: flex; gap: 8px; margin-left: 8px; }
+  .tools button { height: 30px; padding: 0 13px; border-radius: 15px; border: 1px solid var(--line); background: none; cursor: pointer; font-size: 12.5px; color: var(--sub); }
+  .tools button:hover { border-color: var(--faint); color: var(--text); }
+  .tools button[hidden] { display: none; }
+  .tally { margin-left: auto; }
+
+  /* 작업자 확정 */
+  .confirm { margin: 16px 0 0; }
+  .confirm[hidden] { display: none; }
+  .confirm .ask { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .confirm .ask button { height: 40px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 13.5px; font-weight: 600; }
+  .confirm .ask button kbd { font: 500 11px var(--mono); color: var(--faint); margin-left: 7px; }
+  .confirm .ask .yes:hover { border-color: var(--ng); color: var(--ng); }
+  .confirm .ask .no:hover { border-color: var(--ok); color: var(--ok); }
+  .confirm .done { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 14px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); font-size: 13.5px; }
+  .confirm .done b.이물 { color: var(--ng); } .confirm .done b.정상 { color: var(--ok); }
+  .confirm .done button { background: none; border: 0; color: var(--faint); cursor: pointer; font-size: 12.5px; text-decoration: underline; text-underline-offset: 3px; }
+  .confirm p { margin: 7px 0 0; font-size: 12px; color: var(--faint); }
+  .row .ck { font: 600 11px var(--mono); padding-right: 4px; }
+  .row .ck.이물 { color: var(--ng); } .row .ck.정상 { color: var(--ok); }
+
+  /* 창: 자가 점검 · 교대 보고서 */
+  dialog { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 0; max-height: 94vh; box-shadow: 0 30px 80px rgba(0, 0, 0, .6); }
+  dialog::backdrop { background: rgba(5, 8, 10, .68); }
+  .dlg { padding: 26px 32px 24px; }
+  .dlg h3 { margin: 0; font-size: 20px; font-weight: 700; }
+  .dlg .lead { margin: 6px 0 0; color: var(--sub); font-size: 13.5px; }
+  .dlg .acts { display: flex; gap: 8px; margin-top: 24px; justify-content: flex-end; }
+  .dlg .acts button, .dlg .acts select { height: 36px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 13px; font-weight: 500; }
+  .dlg .acts button.go { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
+  .dlg .acts button:disabled { opacity: .5; cursor: default; }
+  .dlg .acts .sp { margin-right: auto; }
+  #dlg-check { width: 520px; }
+  .pieces { display: grid; grid-template-columns: repeat(20, 1fr); gap: 5px; margin: 22px 0 14px; }
+  .pieces i { height: 26px; border-radius: 4px; background: var(--line); }
+  .pieces i.hit { background: var(--ok); } .pieces i.miss { background: var(--ng); }
+  .result { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+  .result.ok { color: var(--ok); } .result.bad { color: var(--ng); }
+  .result small { font-size: 14px; font-weight: 400; color: var(--sub); margin-left: 10px; letter-spacing: 0; }
+  #dlg-report { width: 880px; }
+  .rp-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .rp-top span { font: 12.5px var(--mono); color: var(--sub); }
+  .rp-nums { display: grid; grid-template-columns: repeat(5, 1fr); margin: 22px 0 4px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .rp-nums div { padding: 14px 0 13px 16px; border-left: 1px solid var(--line-soft); }
+  .rp-nums div:first-child { border-left: 0; padding-left: 0; }
+  .rp-nums b { display: block; font: 600 28px var(--mono); letter-spacing: 0; }
+  .rp-nums span { font-size: 12px; color: var(--sub); }
+  .rp-nums .ok b { color: var(--ok); } .rp-nums .hold b { color: var(--hold); } .rp-nums .ng b { color: var(--ng); }
+  .rp-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 36px; }
+  .rp th.r, .rp td.r { text-align: right; }
+  .rp td.r { font-family: var(--mono); }
+  .rp h2 { margin-top: 22px; }
+  .rp td { padding: 7px 0; }
+  .rp td small { color: var(--faint); font-family: Pretendard, "Malgun Gothic", sans-serif; margin-left: 6px; }
+  .maps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .maps figure { margin: 0; }
+  .maps svg { background: var(--panel); border-radius: 6px; aspect-ratio: 4 / 3; }
+  .maps figcaption { font-size: 12px; color: var(--sub); margin-top: 5px; }
+  .rp .note { margin-top: 8px; }
+  @media print {
+    header, main { display: none !important; }
+    body { display: block; background: #fff; overflow: visible; }
+    dialog#dlg-report { position: static; width: auto; max-height: none; border: 0; box-shadow: none; background: #fff; color: #111; }
+    dialog::backdrop { background: #fff; }
+    .rp { --bg: #fff; --panel: #f3f5f6; --line: #cfd6da; --line-soft: #e3e8eb; --text: #111; --sub: #4a565c; --faint: #6c7a81; }
+    .dlg .acts { display: none; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>X-ray 이물 검사</h1>
   <span class="model" id="model"></span>
+  <div class="tools">
+    <button id="bt-check" hidden>자가 점검</button>
+    <button id="bt-report">교대 보고서</button>
+  </div>
   <div class="tally">
     <span>검사<b id="n-all">0</b></span>
     <span class="ok">합격<b id="n-합격">0</b></span>
@@ -172,6 +245,7 @@
   <aside class="side">
     <div class="verdict" id="verdict">&nbsp;</div>
     <p class="why" id="why">왼쪽에서 사진을 고르면 판정이 표시됩니다.</p>
+    <div class="confirm" id="confirm" hidden></div>
 
     <h2>이물 점수와 기준선</h2>
     <svg id="scale" viewBox="0 0 316 64" height="64"></svg>
@@ -195,10 +269,26 @@
   </aside>
 </main>
 
+<dialog id="dlg-check"><div class="dlg">
+  <h3>자가 점검</h3>
+  <p class="lead">정상 사진 20장에 사양 진하기의 가상 시험편(지름 2px)을 하나씩 넣고, 지금도 잡는지 확인합니다.</p>
+  <div class="pieces" id="pieces"></div>
+  <div class="result" id="ck-result">&nbsp;</div>
+  <p class="note" id="ck-note">&nbsp;</p>
+  <div class="acts">
+    <select id="ck-level" class="sp" title="조건">
+      <option value="0">평상시</option><option value="0.5">모의 열화 (흐림 · 잡음 중간)</option><option value="0.7">모의 열화 (흐림 · 잡음 심함)</option>
+    </select>
+    <button id="ck-close">닫기</button><button id="ck-run" class="go">점검 시작</button>
+  </div>
+</div></dialog>
+
+<dialog id="dlg-report"><div class="dlg rp" id="report"></div></dialog>
+
 <script>
 const $ = id => document.getElementById(id);
 const COLOR = { 합격: '#35c2a4', 재검사: '#f0a63c', 불합격: '#ef5b52' };
-const st = { info: null, kind: 'ng', cur: null, res: null, sel: 0, img: null, risk: null, seen: {}, top: {}, cnt: {}, show: { box: true, risk: false, truth: false } };
+const st = { info: null, kind: 'ng', cur: null, res: null, sel: 0, img: null, risk: null, seen: {}, top: {}, cnt: {}, conf: {}, seq: 0, show: { box: true, risk: false, truth: false } };
 
 function label(id) {
   const m = id.match(/^m(\d)_\d+_(\d{4})(\d\d)(\d\d)_(\d\d)(\d\d)(\d\d)\((\d+)\)/);
@@ -209,14 +299,34 @@ async function init() {
   st.info = await (await fetch('/api/info')).json();
   $('model').textContent = `최종 모델 ${st.info.model} · 합격선 ${st.info.t_low.toFixed(2)} · 불합격선 ${st.info.t_high.toFixed(2)}`;
   $('guarantee').textContent = '기준선 보장: ' + st.info.guarantee;
-  $('tabs').innerHTML = Object.entries(st.info.kinds).filter(([k]) => st.info.samples[k].length)
+  $('tabs').innerHTML = Object.entries(st.info.kinds).filter(([k]) => st.info.samples[k].length || (k === 'watch' && st.info.watch))
     .map(([k, v]) => `<button role="tab" data-k="${k}">${v}</button>`).join('') + '<button role="tab" data-k="queue">재검사 대기</button>';
   $('runall').onclick = runAll;
   $('tabs').onclick = e => { if (e.target.dataset.k) { st.kind = e.target.dataset.k; rows(); } };
+  $('bt-check').hidden = !st.info.check;
+  $('bt-check').onclick = () => { $('pieces').innerHTML = '<i></i>'.repeat(20); $('ck-result').innerHTML = '&nbsp;'; $('ck-result').className = 'result'; $('ck-note').innerHTML = '&nbsp;'; $('dlg-check').showModal(); };
+  $('ck-close').onclick = () => $('dlg-check').close();
+  $('ck-run').onclick = selfCheck;
+  $('bt-report').onclick = openReport;
+  await sync();                     // 서버가 이미 판정해 둔 것(폴더 감시 · 새로 고침 전의 검사)을 이어받는다
   rows();
   drawScale();
   const first = st.info.samples[st.kind][0];
   if (first) pick(st.kind, first.id);
+  setInterval(async () => { if (await sync()) rows(); }, 2000);
+}
+
+// 서버의 판정 기록 · 확정 내용을 가져와 맞춘다. 바뀐 것이 있으면 true
+async function sync() {
+  const d = await (await fetch('/api/session?since=' + st.seq)).json();
+  let changed = false;
+  for (const r of d.records) {
+    if (r.kind === 'watch' && !st.info.samples.watch.some(s => s.id === r.id)) st.info.samples.watch.push({ id: r.id, machine: r.machine });
+    if (!st.seen[r.kind + '/' + r.id]) { record({ kind: r.kind, id: r.id, verdict: r.verdict, top: r.top, boxes: { length: r.n }, weak: { length: r.weak } }); changed = true; }
+  }
+  st.seq = d.seq;
+  if (JSON.stringify(d.confirm) !== JSON.stringify(st.conf)) { st.conf = d.confirm; changed = true; }
+  return changed;
 }
 
 // 지금 목록에 보일 항목: 묶음이면 그 사진들, '재검사 대기'면 검사한 사진 중 합격이 아닌 것을 점수 높은 순으로
@@ -227,9 +337,10 @@ function tiers() {
   const obj = k => ({ kind: k.slice(0, k.indexOf('/')), id: k.slice(k.indexOf('/') + 1) });
   const order = (a, b) => (st.top[b] - st.top[a]) || (st.cnt[b] - st.cnt[a]);
   return {
-    t1: keys.filter(k => st.seen[k] === '재검사').sort(order).map(obj),
-    t2: keys.filter(k => st.seen[k] === '합격' && st.top[k] >= st.info.weak).sort(order).map(obj),
+    t1: keys.filter(k => st.seen[k] === '재검사' && !st.conf[k]).sort(order).map(obj),
+    t2: keys.filter(k => st.seen[k] === '합격' && st.top[k] >= st.info.weak && !st.conf[k]).sort(order).map(obj),
     auto: keys.filter(k => st.seen[k] === '불합격').length,
+    done: keys.filter(k => st.conf[k]).length,          // 사람이 확정한 것은 대기 목록에서 빠진다
   };
 }
 
@@ -242,22 +353,23 @@ function items() {
 function rows() {
   [...$('tabs').children].forEach(b => b.setAttribute('aria-selected', b.dataset.k === st.kind));
   const list = items(), q = st.kind === 'queue';
-  $('runall').style.display = q ? 'none' : '';
+  $('runall').style.display = q || st.kind === 'watch' ? 'none' : '';
   const row = s => {
     const l = label(s.id), key = s.kind + '/' + s.id;
     return `<button class="row" data-kind="${s.kind}" data-id="${encodeURIComponent(s.id)}" aria-current="${st.cur === key}">
       <img loading="lazy" src="/api/thumb?kind=${s.kind}&id=${encodeURIComponent(s.id)}" alt="">
       <span><div class="t1">${l.t1}</div><div class="t2">${q ? l.t2.split(' · ')[0] + ' · ' + st.info.kinds[s.kind] : l.t2}</div></span>
-      ${q ? `<span class="sc">${st.top[key].toFixed(2)}</span>` : `<span class="dot ${st.seen[key] || ''}"></span>`}</button>`;
+      ${q ? `<span class="sc">${st.top[key].toFixed(2)}</span>` : st.conf[key] ? `<span class="ck ${st.conf[key]}">${st.conf[key] === '이물' ? '폐기' : '통과'}</span>` : `<span class="dot ${st.seen[key] || ''}"></span>`}</button>`;
   };
   if (q) {
     const t = tiers();
     $('qinfo').textContent = list.length ? '점수 높은 순' : '검사한 사진 가운데 사람이 볼 것이 여기에 쌓입니다';
     $('rows').innerHTML = (t.t1.length ? `<div class="grp"><span>1순위 · 재검사 (반드시 확인)</span><b>${t.t1.length}</b></div>` + t.t1.map(row).join('') : '')
       + (t.t2.length ? `<div class="grp"><span>2순위 · 약한 신호 (여유 있을 때)</span><b>${t.t2.length}</b></div>` + t.t2.map(row).join('') : '')
-      + (t.auto ? `<div class="grp auto"><span>자동 배출 (사람 확인 없음)</span><b>${t.auto}</b></div>` : '');
+      + (t.auto ? `<div class="grp auto"><span>자동 배출 (사람 확인 없음)</span><b>${t.auto}</b></div>` : '')
+      + (t.done ? `<div class="grp auto"><span>작업자 확정 끝남</span><b>${t.done}</b></div>` : '');
   } else {
-    $('qinfo').textContent = `${list.length}장`;
+    $('qinfo').textContent = st.kind === 'watch' ? `폴더 감시 중 (${st.info.watch}) · ${list.length}장` : `${list.length}장`;
     $('rows').innerHTML = list.map(row).join('');
   }
   $('rows').onclick = e => { const r = e.target.closest('.row'); if (r) pick(r.dataset.kind, decodeURIComponent(r.dataset.id)); };
@@ -309,7 +421,7 @@ function rowsMark() {
   [...$('rows').querySelectorAll('.row')].forEach(r => {
     const key = r.dataset.kind + '/' + decodeURIComponent(r.dataset.id);
     r.setAttribute('aria-current', key === st.cur);
-    if (st.kind !== 'queue') r.lastElementChild.className = 'dot ' + (st.seen[key] || '');
+    if (st.kind !== 'queue' && !st.conf[key]) r.lastElementChild.className = 'dot ' + (st.seen[key] || '');
   });
 }
 
@@ -324,6 +436,7 @@ function panel() {
     : r.verdict === '재검사'
       ? `이물로 보이는 신호가 ${n}곳 있습니다. 사람이 확인한 뒤 결정합니다.`
       : `뚜렷한 이물 신호가 있습니다. 표시된 ${n}곳을 확인하고 폐기합니다.`;
+  confirmBox();
   drawScale();
   $('signals').innerHTML = n ? `<table><thead><tr><th></th><th>점수</th><th>판정</th><th style="padding-left:14px">자리</th></tr></thead><tbody>` +
     r.boxes.map((b, i) => `<tr class="sig" data-i="${i}" aria-selected="${i === st.sel}"><td class="no">${i + 1}</td><td class="sc">${b.score.toFixed(2)}</td>
@@ -338,6 +451,90 @@ function panel() {
   $('k-size').textContent = `${r.w} × ${r.h}`;
   $('k-infer').textContent = r.ms.infer.toFixed(0) + ' ms';
   $('k-explain').textContent = r.ms.explain.toFixed(0) + ' ms';
+}
+
+// 작업자 확정: 사람이 볼 제품(재검사 · 불합격 · 약한 신호)에만 단추를 보인다. 결과는 서버가 demo/log/confirm.csv 에 쌓는다
+function confirmBox() {
+  const r = st.res, box = $('confirm'), key = st.cur;
+  const need = r && r.kind !== 'upload' && (r.verdict !== '합격' || r.weak.length);
+  box.hidden = !need;
+  if (!need) return;
+  const c = st.conf[key];
+  box.innerHTML = c
+    ? `<div class="done"><span>작업자 확정 <b class="${c}">${c === '이물' ? '이물 맞음 · 폐기' : '이물 아님 · 통과'}</b></span><button data-d="취소">되돌리기</button></div>`
+    : `<div class="ask"><button class="yes" data-d="이물">이물 맞음<kbd>1</kbd></button><button class="no" data-d="정상">이물 아님<kbd>2</kbd></button></div>
+       <p>확정 결과는 기록으로 쌓여 다음 학습과 기준선 점검에 쓰입니다.</p>`;
+  box.onclick = e => { const d = e.target.closest('button')?.dataset.d; if (d) confirmAs(d); };
+}
+
+async function confirmAs(dec) {
+  const r = st.res;
+  if (!r || $('confirm').hidden || (st.conf[st.cur] && dec !== '취소')) return;
+  const key = st.cur, before = items(), at = before.findIndex(s => s.kind + '/' + s.id === key);
+  const res = await (await fetch(`/api/confirm?kind=${r.kind}&id=${encodeURIComponent(r.id)}&decision=${encodeURIComponent(dec)}`, { method: 'POST' })).json();
+  if (res.error) return;
+  if (res.decision) st.conf[key] = res.decision; else delete st.conf[key];
+  rows();
+  const next = st.kind === 'queue' && res.decision ? items()[Math.min(at, items().length - 1)] : null;   // 대기 목록에서는 다음 제품으로 넘어간다
+  if (next) pick(next.kind, next.id); else confirmBox();
+}
+
+async function selfCheck() {
+  const run = $('ck-run'); run.disabled = true; run.textContent = '점검 중';
+  $('pieces').innerHTML = '<i></i>'.repeat(20); $('ck-result').innerHTML = '&nbsp;'; $('ck-note').innerHTML = '&nbsp;';
+  const r = await (await fetch('/api/selfcheck?level=' + $('ck-level').value)).json();
+  run.disabled = false; run.textContent = '다시 점검';
+  if (r.error) { $('ck-note').textContent = r.error; return; }
+  $('pieces').innerHTML = r.pieces.map(p => `<i class="${p.hit ? 'hit' : 'miss'}" title="${p.machine}호기 · 진하기 ${p.c0}"></i>`).join('');
+  $('ck-result').className = 'result ' + (r.ok ? 'ok' : 'bad');
+  $('ck-result').innerHTML = `${r.ok ? '정상' : '점검 필요'}<small>${r.n}개 중 ${r.hits}개 검출 · 경보 하한 ${r.lcl}개</small>`;
+  $('ck-note').textContent = (r.level > 0 ? '모의 열화 조건입니다(실제 장비 자료가 아닙니다). ' : '')
+    + (r.ok ? `평상시 검출률 ${(r.base * 100).toFixed(0)}% 기준으로 정상 범위입니다.` : '검출 감도가 평상시보다 떨어졌습니다. 장비 상태와 모델을 확인하세요.') + ` (${r.sec}초)`;
+}
+
+async function openReport() {
+  const r = await (await fetch('/api/report')).json(), pct = (a, b) => b ? (a / b * 100).toFixed(1) + '%' : '-';
+  const maps = [1, 2, 3].map(m => {
+    const pts = r.points.filter(p => p[0] === m);
+    return `<figure><svg viewBox="0 0 120 90"><rect x="14" y="12" width="92" height="66" rx="9" fill="none" stroke="#3a474e" stroke-width="1"/>`
+      + pts.map(p => `<circle cx="${(14 + p[1] * 92).toFixed(1)}" cy="${(12 + p[2] * 66).toFixed(1)}" r="1.7" fill="#f0a63c" opacity=".7"/>`).join('')
+      + `</svg><figcaption>${m}호기 · 신호 ${pts.length}곳</figcaption></figure>`;
+  }).join('');
+  const c = r.confirm;
+  const checks = r.checks.length ? `<div class="kv">` + r.checks.map(k => `<span>${k.time}${k.level > 0 ? ' · 모의 열화' : ''}</span><b style="color:var(--${k.ok ? 'ok' : 'ng'})">${k.hits} / ${k.n} · ${k.ok ? '정상' : '점검 필요'}</b>`).join('') + `</div>`
+    : `<p class="none">이번 교대에 실행한 자가 점검이 없습니다.</p>`;
+  $('report').innerHTML = `
+    <div class="rp-top"><h3>교대 보고서</h3><span>${r.started} ~ ${r.now.slice(11)}</span></div>
+    <p class="lead">모델 ${r.model} · 합격선 ${r.t_low.toFixed(2)} · 불합격선 ${r.t_high.toFixed(2)}${r.watch ? ' · 감시 폴더 ' + r.watch : ''}</p>
+    <div class="rp-nums">
+      <div><b>${r.n}</b><span>검사한 제품</span></div>
+      <div class="ok"><b>${r.ok}</b><span>합격 ${pct(r.ok, r.n)}</span></div>
+      <div class="hold"><b>${r.hold}</b><span>재검사 ${pct(r.hold, r.n)}</span></div>
+      <div class="ng"><b>${r.ng}</b><span>불합격 (자동 배출)</span></div>
+      <div><b>${r.weak}</b><span>합격 중 약한 신호</span></div>
+    </div>
+    <h2>호기별</h2>
+    <table><thead><tr><th>호기</th><th class="r">검사</th><th class="r">사람이 볼 제품</th><th class="r">신호 수</th><th class="r">신호 있는 제품당</th><th class="r">띠 밖 신호</th></tr></thead><tbody>`
+    + (r.machines.map(m => `<tr><td>${m.machine}호기</td><td class="r">${m.n}</td><td class="r">${m.hold}<small>${pct(m.hold, m.n)}</small></td><td class="r">${m.signals}</td>
+        <td class="r">${m.per ?? '-'}${m.base ? `<small>기준 ${m.base.per.toFixed(1)}</small>` : ''}</td>
+        <td class="r">${m.off == null ? '-' : (m.off * 100).toFixed(1) + '%'}${m.base ? `<small>기준 ${(m.base.off * 100).toFixed(1)}%</small>` : ''}</td></tr>`).join('')
+       || '<tr><td colspan="6" class="none">아직 검사한 제품이 없습니다.</td></tr>') + `</tbody></table>
+    <p class="note">기준 = 학습 자료 앞 30% 기간의 값(process_signal.py). 묶음이 작을 때는 참고로만 봅니다.</p>
+    <div class="rp-two">
+      <div><h2>신호가 나온 자리 (제품 외곽 상자 기준)</h2><div class="maps">${maps}</div>
+        <h2>자가 점검</h2>${checks}</div>
+      <div><h2>자리의 성질</h2>
+        <div class="kv"><span>어두운 띠 안</span><b>${r.band == null ? '-' : (r.band * 100).toFixed(1) + '%'}</b>
+          <span>가장자리까지 거리 (중앙값)</span><b>${r.edge == null ? '-' : r.edge + ' px'}</b>
+          <span>주변 결 매끈 · 중간 · 거침</span><b>${r.texture['매끈']} · ${r.texture['중간']} · ${r.texture['거침']}</b>
+          <span>판정 시간 (중앙값)</span><b>${r.infer == null ? '-' : r.infer + ' ms'}</b></div>
+        <h2>작업자 확정</h2>
+        <div class="kv"><span>확정한 제품 / 사람이 볼 제품</span><b>${c.done} / ${c.target}</b>
+          <span>이물 맞음 (폐기)</span><b>${c.yes}</b><span>이물 아님 (통과)</span><b>${c.no}</b></div>
+      </div>
+    </div>
+    <div class="acts"><button onclick="window.print()">인쇄</button><button class="go" onclick="document.getElementById('dlg-report').close()">닫기</button></div>`;
+  $('dlg-report').showModal();
 }
 
 function drawScale() {
@@ -416,6 +613,8 @@ for (const k of ['box', 'risk', 'truth']) $('tg-' + k).onclick = e => {
 };
 window.addEventListener('resize', draw);
 window.addEventListener('keydown', e => {
+  if (document.querySelector('dialog[open]')) return;
+  if (e.key === '1' || e.key === '2') return confirmAs(e.key === '1' ? '이물' : '정상');
   if (!['ArrowDown', 'ArrowUp'].includes(e.key) || !st.info) return;
   const list = items(), i = list.findIndex(s => s.kind + '/' + s.id === st.cur);
   const n = list[Math.max(0, Math.min(list.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];

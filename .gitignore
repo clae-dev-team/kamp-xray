@@ -4,3 +4,5 @@ results/
 runs/
 *.pt
 __pycache__/
+demo/log/
+demo/inbox/

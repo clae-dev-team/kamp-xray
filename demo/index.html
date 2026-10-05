@@ -489,7 +489,7 @@ async function selfCheck() {
   $('ck-result').className = 'result ' + (r.ok ? 'ok' : 'bad');
   $('ck-result').innerHTML = `${r.ok ? '정상' : '점검 필요'}<small>${r.n}개 중 ${r.hits}개 검출 · 경보 하한 ${r.lcl}개</small>`;
   $('ck-note').textContent = (r.level > 0 ? '모의 열화 조건입니다(실제 장비 자료가 아닙니다). ' : '')
-    + (r.ok ? `평상시 검출률 ${(r.base * 100).toFixed(0)}% 기준으로 정상 범위입니다.` : '검출 감도가 평상시보다 떨어졌습니다. 장비 상태와 모델을 확인하세요.') + ` (${r.sec}초)`;
+    + (r.ok ? `평상시 검출률 ${(r.base * 100).toFixed(0)}% 기준으로 정상 범위입니다.` : '검출 수가 경보 하한 아래입니다. 한 번 더 점검해 같은 결과면 장비 상태와 모델을 확인하세요.') + ` (${r.sec}초)`;
 }
 
 async function openReport() {

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
           "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "zone_rules", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam",
-          "uncertainty", "extra", "paste_eval", "paste_eval_ref", "operating_point", "unlabeled_check", "process_signal"]
+          "uncertainty", "extra", "paste_eval", "paste_eval_ref", "unlabeled_check", "operating_point", "process_signal"]
 
 
 def sh(*args, log=None):
@@ -162,8 +162,9 @@ def main():
                                        *([cnn_name] if cnn else []), log="paste_eval_ref.log"))
 
     # 현장 활용 분석: 비용 기반 운영점 · 검사 우선순위, 정답 없는 영상 사후 대조, 공정 점검 신호
-    stage("operating_point", lambda: sh("src/operating_point.py", "--yolo", final["name"], log="operating_point.log"))
+    # 정답 없는 영상 대조를 먼저 돈다: 검사 우선순위 단계표(operating_point)가 그 결과를 읽는다
     stage("unlabeled_check", lambda: sh("src/unlabeled_check.py", "--yolo", final["name"], "--predict", log="unlabeled_check.log"))
+    stage("operating_point", lambda: sh("src/operating_point.py", "--yolo", final["name"], log="operating_point.log"))
     stage("process_signal", lambda: sh("src/process_signal.py", log="process_signal.log"))
 
     json.dump({"final": final["name"], "models": models, "skip_train": args.skip_train, "seconds": timing},

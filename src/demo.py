@@ -154,7 +154,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({"error": "없는 사진"}, code=404)
             gray = np.asarray(Image.open(S.paths[key]).convert("L"))
             machine = next(s["machine"] for s in S.samples[key[0]] if s["id"] == key[1])
-            return self.send(dict(id=key[1], kind=key[0], **inspect(gray, machine, S.truth[key])))
+            res = dict(id=key[1], kind=key[0], **inspect(gray, machine, S.truth[key]))
+            if q.get("light"):                      # 묶음 전체 검사: 그림은 빼고 판정만 보낸다
+                res.pop("image"), res.pop("risk")
+            return self.send(res)
         self.send({"error": "없는 주소"}, code=404)
 
     def do_POST(self):

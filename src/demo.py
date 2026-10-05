@@ -26,6 +26,7 @@ import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -57,6 +58,7 @@ IMG_EXT = {".png", ".bmp", ".jpg", ".jpeg"}
 
 class State:
     lock = threading.Lock()
+    gpu = ThreadPoolExecutor(max_workers=1)      # 추론 전용 스레드 하나. 요청마다 새 스레드에서 추론하면 GPU 준비가 매번 붙어 한 장에 60ms 가 더 든다
     session, confirm, checks, seq = {}, {}, [], 0
     watch = None
 
@@ -141,11 +143,16 @@ def load_gray(src):
     return gray, bool(mask.any())
 
 
+def predict(gray, conf):
+    """회색 영상 한 장을 추론 전용 스레드에서 추론한다 (한 번에 한 장)."""
+    return State.gpu.submit(lambda: State.model.predict(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), imgsz=640, conf=conf, max_det=100,
+                                                        verbose=False)[0]).result()
+
+
 def inspect(gray, machine, truth=None, cleaned=False):
     S = State
     t0 = time.perf_counter()
-    with S.lock:
-        res = S.model.predict(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), imgsz=640, conf=0.001, max_det=100, verbose=False)[0]
+    res = predict(gray, 0.001)
     t1 = time.perf_counter()
     xyxy, conf = res.boxes.xyxy.cpu().numpy(), res.boxes.conf.cpu().numpy()
     top = float(conf.max()) if len(conf) else 0.0
@@ -240,8 +247,7 @@ def self_check(level=0.0):
         if level > 0:                                     # 시험편도 같은 장비를 지나가므로 넣은 뒤에 열화를 건다
             f = cv2.GaussianBlur(f, (0, 0), BLUR_MAX * level) + rng.normal(0, NOISE_MAX * level, f.shape).astype(np.float32)
         g2 = np.clip(f.round(), 0, 255).astype(np.uint8)
-        with S.lock:
-            r = S.model.predict(cv2.cvtColor(g2, cv2.COLOR_GRAY2BGR), imgsz=640, conf=C["thr"], max_det=100, verbose=False)[0]
+        r = predict(g2, C["thr"])
         b = r.boxes.xyxy.cpu().numpy()
         hit = bool(len(b) and (np.hypot((b[:, 0] + b[:, 2]) / 2 - cx, (b[:, 1] + b[:, 3]) / 2 - cy) <= CHECK_NEAR).any())
         pieces.append(dict(machine=s["machine"], c0=c0, hit=hit))

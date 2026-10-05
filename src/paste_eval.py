@@ -10,6 +10,10 @@
 
 실행: .venv\\Scripts\\python.exe src\\paste_eval.py --models ratio0_e100 ratio3_e100 paste3_e100 mix3_e100 cnn_aug
 결과: data/paste_test/ (평가셋), results/paste_eval/ (summary.json, defects_scored.csv, rate_by_contrast.png)
+
+  --source ref : 지운 배경 대신 '인접 프레임'을 기준으로 떼어 낸 조각을, 원래 자리와 둘레 구조가 닮은 자리에 넣는다
+                 (reference_residual.py). 조각은 val·test 사진에서만 떼고(학습에 쓰인 적 없음) test 사진에 넣는다.
+                 결과: data/ref_test/, results/paste_eval_ref/
 """
 import argparse
 import json
@@ -27,6 +31,7 @@ import matplotlib.pyplot as plt
 
 import baseline as B
 import cnn as C
+import reference_residual as RR
 from augment_paste import build_bank, paste
 from defect_stats import measure
 from prepare import product_mask
@@ -94,18 +99,75 @@ def build(data, cfg):
     print(len(img_rows), "장,", len(rows), "개, 은행", {k: len(v) for k, v in bank.items()})
 
 
+def build_ref(data, cfg):
+    """인접 프레임 기준 조각 + 구조 맞춤 자리로 만든 시험편 (data/ref_test)."""
+    out = data / "ref_test"
+    (out / "images").mkdir(parents=True, exist_ok=True)
+    man = pd.read_csv(data / "manifest.csv")
+    man = man[man["labeled"]]
+    bank, refs = RR.build_ref_bank(data, man[man["split"].isin(["val", "test"])])
+    test = man[man["split"] == "test"]
+    rows, img_rows = [], []
+    for r in tqdm(list(test.itertuples()), desc="기준 프레임 시험편"):
+        g = np.asarray(Image.open(data / "clean/images" / f"{r.id}.png"))
+        h, w = g.shape
+        pm = product_mask(g)
+        band = band_mask(g, pm)
+        real = RR.load_boxes(data, r.id, w, h)
+        donors = [d for d in bank.get(int(r.machine), []) if d["id"] != r.id]
+        if not donors:
+            continue
+        picker = RR.ContextPicker(g, pm)
+        for v in range(VARIANTS):
+            rng = np.random.default_rng([cfg["seed"] + SEED_OFFSET + 1, int(r.sha1[:8], 16), v])
+            f = g.astype(np.float32)
+            sid = f"{r.id}__r{v:02d}"
+            placed, new = [], []
+            for _ in range(PER_IMAGE):
+                dn = donors[rng.integers(len(donors))]
+                s = STRENGTHS[rng.integers(len(STRENGTHS))]
+                taken = [tuple(b) for b in real] + [(px - 12, py - 12, px + 12, py + 12) for px, py in placed]
+                cs = picker.candidates(dn["desc"], dn["bw"], dn["bh"], taken)[:8]
+                if not cs:
+                    continue
+                cost, x0, y0 = cs[rng.integers(len(cs))]
+                if not RR.apply(f, x0, y0, dn["patch"], s):
+                    continue
+                cx, cy = x0 + dn["bw"] / 2, y0 + dn["bh"] / 2
+                placed.append((cx, cy))
+                new.append(dict(img=sid, src=r.id, machine=r.machine, cx=cx, cy=cy, s=s, donor=dn["id"], cost=round(cost, 3),
+                                donor_depth=round(float(1 - dn["patch"].min()), 3), in_band=bool(band[int(cy), int(cx)])))
+            if not new:
+                continue
+            img = np.clip(f.round(), 0, 255).astype(np.uint8)
+            Image.fromarray(img).save(out / "images" / f"{sid}.png")
+            for row in new:
+                m = measure(img, row["cx"] - 0.5, row["cy"] - 0.5)
+                row.update(c_meas=m["contrast"], area_meas=m["area"])
+            rows += new
+            img_rows.append(dict(img=sid, src=r.id, machine=r.machine, w=w, h=h))
+    pd.DataFrame(rows).to_csv(out / "defects.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame(img_rows).to_csv(out / "images.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame(refs).to_csv(out / "references.csv", index=False, encoding="utf-8-sig")
+    json.dump(dict(strengths=STRENGTHS, per_image=PER_IMAGE, variants=VARIANTS, box=BOX, n_images=len(img_rows),
+                   n_defects=len(rows), bank={str(k): len(v) for k, v in bank.items()}, n_references=len(refs)),
+              open(out / "config.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    print(len(img_rows), "장,", len(rows), "개, 은행", {k: len(v) for k, v in bank.items()})
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", nargs="+", default=["ratio0_e100", "ratio3_e100", "paste3_e100", "mix3_e100", "cnn_aug"])
     ap.add_argument("--rebuild", action="store_true")
+    ap.add_argument("--source", default="paste", choices=["paste", "ref"])
     args = ap.parse_args()
     cfg = yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
-    syn = data / "paste_test"
-    out = ROOT / "results" / "paste_eval"
+    syn = data / f"{args.source}_test"
+    out = ROOT / "results" / ("paste_eval" if args.source == "paste" else "paste_eval_ref")
     out.mkdir(parents=True, exist_ok=True)
     if args.rebuild or not (syn / "defects.csv").exists():
-        build(data, cfg)
+        (build if args.source == "paste" else build_ref)(data, cfg)
 
     imgs = pd.read_csv(syn / "images.csv")
     defects = pd.read_csv(syn / "defects.csv")

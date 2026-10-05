@@ -11,7 +11,11 @@ realism.py 에서 구 모양 합성 이물은 실제 이물과 거의 완벽히 
 
   --mode paste : 합성 이물을 모두 이식으로 (data/aug_paste)
   --mode mix   : 이물마다 절반은 구 합성(augment.py 와 같은 조건), 절반은 이식 (data/aug_mix)
+  --mode ref   : 인접 프레임을 기준으로 떼어 낸 이식만 (reference_residual.py, data/aug_ref)
+  --mode all3  : 구 합성 · 이식 · 인접 프레임 이식을 1/3 씩 (data/aug_all3)
+  --placement context : 인접 프레임 이식의 자리를 '원래 자리와 둘레 구조가 닮은 자리'로 고른다 (결과 폴더 이름 뒤에 ctx)
 자리 뽑기·장수·한 장당 개수는 augment.py 와 같다 (비교를 위해 모양만 다르게).
+인접 프레임 기준은 이물의 약 1/4 에서만 찾아지므로, 그 호기에 조각이 없거나 놓을 자리가 없으면 그 이물은 넣지 않고 수를 config.json 에 남긴다.
 
 실행: .venv\\Scripts\\python.exe src\\augment_paste.py --mode paste
 결과: data/aug_<mode>/{images,labels,train.txt,defects.csv,config.json}, data/aug_<mode>.yaml
@@ -27,6 +31,7 @@ from PIL import Image
 from tqdm import tqdm
 
 import augment as A
+import reference_residual as RR
 from location_test import dot_mask
 from normal_set import dot_centers
 from prepare import product_mask, restore
@@ -37,6 +42,8 @@ R = 4                        # 조각 반폭 (9×9)
 S_RANGE = (0.15, 1.0)        # 이식 세기
 MIN_DEPTH = 0.05             # 이보다 옅게 잘린 점은 은행에서 뺀다 (지우기 실패)
 SEED_OFFSET = 15485863       # 다른 합성 스크립트와 겹치지 않게
+KINDS = {"paste": ["이식"], "mix": ["구", "이식"], "ref": ["기준이식"], "all3": ["구", "이식", "기준이식"]}
+TOPK = 8                     # 구조 맞춤 자리: 비용이 낮은 후보 TOPK 곳 가운데 무작위 (학습 사진마다 자리가 달라지게)
 
 
 def build_bank(data, rows, seed):
@@ -80,20 +87,23 @@ def paste(f, x, y, T, s, rng):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", default="paste", choices=["paste", "mix"])
+    ap.add_argument("--mode", default="paste", choices=list(KINDS))
+    ap.add_argument("--placement", default="random", choices=["random", "context"])
     ap.add_argument("--variants", type=int, default=A.VARIANTS)
     args = ap.parse_args()
     cfg = yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))
     data = ROOT / cfg["out_dir"]
-    tag = f"aug_{args.mode}"
+    kinds = KINDS[args.mode]
+    tag = f"aug_{args.mode}" + ("ctx" if args.placement == "context" else "")
     out = data / tag
     (out / "images").mkdir(parents=True, exist_ok=True)
     (out / "labels").mkdir(parents=True, exist_ok=True)
     man = pd.read_csv(data / "manifest.csv")
     tr = man[man["labeled"] & (man["split"] == "train")]
-    bank = build_bank(data, tr, cfg["seed"])
+    bank = build_bank(data, tr, cfg["seed"]) if "이식" in kinds else {}
+    ref_bank, refs = RR.build_ref_bank(data, tr) if "기준이식" in kinds else ({}, [])
 
-    rows, paths = [], []
+    rows, paths, skipped = [], [], 0
     for r in tqdm(list(tr.itertuples()), desc="이식 증강"):
         g = np.asarray(Image.open(data / "clean/images" / f"{r.id}.png"))
         h, w = g.shape
@@ -101,25 +111,32 @@ def main():
         pm = product_mask(g)
         band = band_mask(g, pm)
         forbid = np.zeros_like(pm)
+        real_xyxy = []
         for b in real:
             cx, cy, bw, bh = b[1] * w, b[2] * h, b[3] * w, b[4] * h
+            real_xyxy.append((cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2))
             forbid[max(0, int(cy - bh / 2 - 10)):int(cy + bh / 2 + 10),
                    max(0, int(cx - bw / 2 - 10)):int(cx + bw / 2 + 10)] = 1
         cand = {"band": np.argwhere(band & (forbid == 0)), "any": np.argwhere((pm > 0) & (forbid == 0))}
-        donors = [d for d in bank[int(r.machine)] if d[0] != r.id]
+        donors = [d for d in bank.get(int(r.machine), []) if d[0] != r.id]
+        ref_donors = [d for d in ref_bank.get(int(r.machine), []) if d["id"] != r.id]
+        picker = RR.ContextPicker(g, pm) if (args.placement == "context" and ref_donors) else None
         for v in range(args.variants):
             rng = np.random.default_rng([cfg["seed"] + SEED_OFFSET, int(r.sha1[:8], 16), v])
             f = g.astype(np.float32)
             placed, labels = [], [tuple(b) for b in real]
-            sid = f"{r.id}__p{v}"
+            sid = f"{r.id}__{'p' if args.mode in ('paste', 'mix') else args.mode[0]}{v}"
             for _ in range(rng.integers(A.N_RANGE[0], A.N_RANGE[1] + 1)):
                 pool = cand["band"] if (rng.random() < A.BAND_P and len(cand["band"])) else cand["any"]
                 for _try in range(100):
                     y, x = pool[rng.integers(len(pool))]
                     if all(np.hypot(x - px, y - py) >= 24 for px, py in placed):
                         break
-                sphere = args.mode == "mix" and rng.random() < 0.5
-                if sphere:                                   # augment.py 와 같은 구·파편 합성
+                if args.mode == "mix":                       # 이전 판과 같은 난수 순서 (data/aug_mix 재현)
+                    kind = "구" if rng.random() < 0.5 else "이식"
+                else:
+                    kind = kinds[rng.integers(len(kinds))] if len(kinds) > 1 else kinds[0]
+                if kind == "구":                             # augment.py 와 같은 구·파편 합성
                     cx, cy = x + rng.random(), y + rng.random()
                     c0, d = rng.uniform(*A.C0_RANGE), rng.uniform(*A.D_RANGE)
                     shard = rng.random() < A.SHARD_P
@@ -130,14 +147,36 @@ def main():
                     ey = abs(d * aspect / 2 * np.sin(angle)) + abs(d / 2 * np.cos(angle))
                     bw, bh = max(A.MIN_BOX, 2 * ex + 6), max(A.MIN_BOX, 2 * ey + 6)
                     info = dict(kind="구", d=d, c0=c0, s=None, donor=None)
-                else:
+                elif kind == "이식":
                     did, T = donors[rng.integers(len(donors))]
                     s = rng.uniform(*S_RANGE)
                     if not paste(f, int(x), int(y), T, s, rng):
+                        skipped += 1
                         continue
                     cx, cy = x + 0.5, y + 0.5
                     bw = bh = A.MIN_BOX
                     info = dict(kind="이식", d=None, c0=None, s=s, donor=did)
+                else:                                        # 인접 프레임 기준 이식
+                    if not ref_donors:
+                        skipped += 1
+                        continue
+                    dn = ref_donors[rng.integers(len(ref_donors))]
+                    s = rng.uniform(*S_RANGE)
+                    bw, bh = dn["bw"], dn["bh"]
+                    x0, y0 = int(x) - bw // 2, int(y) - bh // 2
+                    if picker is not None:
+                        taken = real_xyxy + [(px - 12, py - 12, px + 12, py + 12) for px, py in placed]
+                        cs = picker.candidates(dn["desc"], bw, bh, taken)[:TOPK]
+                        if not cs:
+                            skipped += 1
+                            continue
+                        _, x0, y0 = cs[rng.integers(len(cs))]
+                    if not RR.apply(f, x0, y0, dn["patch"], s):
+                        skipped += 1
+                        continue
+                    cx, cy = x0 + bw / 2, y0 + bh / 2
+                    x, y = int(cx), int(cy)
+                    info = dict(kind="기준이식", d=None, c0=None, s=s, donor=dn["id"])
                 labels.append((0, cx / w, cy / h, bw / w, bh / h))
                 placed.append((x, y))
                 rows.append(dict(img=sid, src=r.id, machine=r.machine, cx=cx, cy=cy, in_band=bool(band[int(y), int(x)]), **info))
@@ -152,11 +191,16 @@ def main():
     yaml.safe_dump(ds, open(data / f"{tag}.yaml", "w", encoding="utf-8"), allow_unicode=True)
     df = pd.DataFrame(rows)
     df.to_csv(out / "defects.csv", index=False, encoding="utf-8-sig")
-    json.dump(dict(mode=args.mode, variants=args.variants, n_range=A.N_RANGE, s_range=S_RANGE, band_p=A.BAND_P,
-                   bank={str(k): len(v) for k, v in bank.items()}, n_images=len(paths), n_defects=len(rows),
+    if refs:
+        pd.DataFrame(refs).to_csv(out / "references.csv", index=False, encoding="utf-8-sig")
+    json.dump(dict(mode=args.mode, placement=args.placement, variants=args.variants, n_range=A.N_RANGE, s_range=S_RANGE,
+                   band_p=A.BAND_P, bank={str(k): len(v) for k, v in bank.items()},
+                   ref_bank={str(k): len(v) for k, v in ref_bank.items()}, n_references=len(refs),
+                   n_images=len(paths), n_defects=len(rows), n_skipped=skipped,
                    kinds=df["kind"].value_counts().to_dict(), n_train_total=len(orig) + len(paths)),
               open(out / "config.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    print(len(orig), "+", len(paths), "장, 넣은 이물", df["kind"].value_counts().to_dict(), "은행", {k: len(v) for k, v in bank.items()})
+    print(len(orig), "+", len(paths), "장, 넣은 이물", df["kind"].value_counts().to_dict(), "건너뜀", skipped,
+          "이식 은행", {k: len(v) for k, v in bank.items()}, "기준 은행", {k: len(v) for k, v in ref_bank.items()})
 
 
 if __name__ == "__main__":

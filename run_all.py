@@ -20,7 +20,8 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
-          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "zone_rules", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam"]
+          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "zone_rules", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam",
+          "uncertainty", "extra", "paste_eval"]
 
 
 def sh(*args, log=None):
@@ -43,6 +44,8 @@ def train(m, skip=False):
         a += ["--variant", m["variant"]]
     if m.get("model"):
         a += ["--model", m["model"]]
+    if m.get("seed") is not None:
+        a += ["--seed", m["seed"]]
     sh(*a, *(["--skip-train"] if skip else []), log=f"{'score' if skip else 'train'}_{m['name']}.log")
 
 
@@ -125,6 +128,34 @@ def main():
         stage("bait_gray", lambda: sh("src/bait_gray.py", "--models", final["name"], "y26s_640", log="bait_gray.log"))
         stage("gradcam", lambda: sh("src/gradcam.py", "--clean", final["name"], "--raw", "y26s_640_raw",
                                     log="gradcam.log"))
+
+    # 수치의 오차 범위 (저장된 예측을 재표집, 학습 없음)
+    if cnn:
+        stage("uncertainty", lambda: sh("src/uncertainty.py", log="uncertainty.log"))
+
+    # 추가 검증 (--all-experiments): 교차 호기 · 시드 반복 · 진짜 점 이식 학습. 판정 파이프라인에는 넣지 않고 따로 채점한다
+    extra = pipe.get("extra", []) if args.all_experiments else []
+
+    def run_extra():
+        for mode in sorted({e["data"][len("data/aug_"):-len(".yaml")] for e in extra if e.get("data", "").startswith("data/aug_")}):
+            sh("src/augment_paste.py", "--mode", mode, log=f"augment_paste_{mode}.log")
+        for e in extra:
+            train(e, skip=args.skip_train)
+            sh("src/synth_eval.py", "--yolo", e["name"], log=f"synth_eval_{e['name']}.log")
+        for v in (3, 0):
+            for m in (1, 2, 3):
+                sh("src/cross_machine.py", "--holdout", m, "--variants", v, *(["--skip-train"] if args.skip_train else []),
+                   log=f"cross_machine_lomo{m}_ratio{v}.log")
+        sh("src/cross_machine.py", "--summary", log="cross_machine_summary.log")
+        seeds = [e["name"] for e in extra if e.get("seed") is not None]
+        if seeds:
+            sh("src/uncertainty.py", "--seeds", final["name"], *seeds, log="uncertainty_seeds.log")
+    if extra:
+        stage("extra", run_extra)
+    # 이식 시험편 평가: 학습돼 있는 모델만 채점한다 (없는 모델은 건너뜀)
+    stage("paste_eval", lambda: sh("src/paste_eval.py", "--models", *[e["name"] for e in exps if e["name"] == "ratio0_e100"],
+                                   final["name"], *[e["name"] for e in extra if e.get("seed") is None],
+                                   *([cnn_name] if cnn else []), log="paste_eval.log"))
 
     json.dump({"final": final["name"], "models": models, "skip_train": args.skip_train, "seconds": timing},
               open(ROOT / "results" / "run_all.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)

@@ -21,3 +21,11 @@ experiments:
   - {name: y26s_640_augn, data: data/aug_n.yaml, epochs: 150, patience: 50, noise: true} # 잡음 보정 합성
   - {name: ratio3bg_e100, data: data/aug_bg.yaml, epochs: 100, patience: 0}              # 합성 3배 + 이물 지운 배경 350장 (채택 안 함)
   - {name: y11s_ratio3_e100, model: yolo11s.pt, data: data/aug.yaml, epochs: 100, patience: 0}  # 이전 세대 YOLO11s, 최종과 같은 조건 (채택 안 함)
+
+# --all-experiments 일 때 추가로 학습해 따로 채점하는 검증 모델 (판정 파이프라인에는 넣지 않는다)
+# 교차 호기 실험(src/cross_machine.py, 호기 3개 × 합성 유무)도 같은 단계에서 함께 돈다
+extra:
+  - {name: ratio3_e100_s1, data: data/aug.yaml, epochs: 100, patience: 0, seed: 1}        # 최종 모델과 시드만 다름 (수치 범위 확인)
+  - {name: ratio3_e100_s2, data: data/aug.yaml, epochs: 100, patience: 0, seed: 2}
+  - {name: paste3_e100, data: data/aug_paste.yaml, epochs: 100, patience: 0}             # 구 합성 대신 진짜 점 이식 3배 (보조 실험)
+  - {name: mix3_e100, data: data/aug_mix.yaml, epochs: 100, patience: 0}                 # 구 합성 절반 + 이식 절반

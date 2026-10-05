@@ -33,6 +33,25 @@ python src/speed.py --yolo ratio3_e100
 
 모든 형식에서 실제 이물 139개를 모두 찾았습니다. FP16 형식은 점수가 최대 0.018 달라져, 보장 기준선의 흔들림 여유(0.0059, FP32 기준)보다 큽니다. FP16으로 운영하려면 그 형식으로 흔들림을 다시 재야 합니다.
 
+## 추가 검증 (2026-10-05)
+
+결론이 어디까지 성립하는지 따로 확인한 실험입니다. `python run_all.py --all-experiments` 의 `extra` 단계에서 함께 돌고, 재표집 구간(`uncertainty`)과 이식 시험편 평가(`paste_eval`)는 기본 실행에도 들어 있습니다.
+
+| 실험 | 코드 | 결과 | 위치 |
+|---|---|---|---|
+| 수치의 오차 범위 | `src/uncertainty.py` | 시험 73장 재표집 95% 구간: 실제 이물 F1 규칙 기반 0.961~0.997 · CNN 0.933~0.977 · 최종 0.982~1.000. 최종 − 규칙 기반 차이는 0을 포함(−0.008~+0.034)하고, 합성 저대비 검출률 차이는 +26.7%p(24.1~29.2) | `results/uncertainty/summary.json` |
+| 시드 반복 | `src/uncertainty.py --seeds` | 시드 0 · 1 · 2 모두 F1 0.993(놓침 0 · 오경보 2), 합성 검출률 55.3~55.6%, 실제 이물 최저 점수 0.635~0.657 | `results/uncertainty/seeds.json` |
+| 교차 호기 | `src/cross_machine.py` | 두 호기로 학습 → 뺀 호기 전체로 시험. 합성 3배: 재현율 100 · 99.7 · 99.7%(오경보 10 · 5 · 5). 합성 없음: 3호기를 빼면 재현율 89.4%(놓침 39) | `results/cross_machine/summary.csv` |
+| 진짜 점 이식 | `src/augment_paste.py`, `src/paste_eval.py` | 실제 이물 점을 투과율로 오려 옅게 옮겨 붙인 시험편 3,504개. 검출률: 규칙 기반 38.7% · 합성 없음 15.2% · CNN 56.6% · 최종(구 합성) 68.6% · 이식 학습 68.5% · 구 합성 + 이식 71.0% | `results/paste_eval/summary.json` |
+
+## 검사 화면 (선택)
+
+```bash
+python src/demo.py     # http://127.0.0.1:8765
+```
+
+영상을 고르거나 올리면 3단 판정, 점수와 기준선, 검출 위치별 설명, 놓치기 쉬운 구역을 보여 줍니다. 추가 패키지 없이 표준 라이브러리로 돌고, 모델 · 기준선 · 위험 지도는 제출 결과와 같은 것을 씁니다 (`run_all.py` 를 먼저 실행해 결과 파일이 있어야 합니다).
+
 ## 재현성 확인 (2026-10-03)
 
 GitHub에서 새로 받은 저장소와 새 가상환경(`requirements.txt`)으로 `python run_all.py`를 처음부터 다시 돌려, 원래 작업 폴더의 결과와 비교했습니다.
@@ -56,7 +75,7 @@ KAMP에서 받은 X-ray 검사장비 AI 데이터셋을 사용합니다. 원본 
 ```bash
 python run_all.py                    # 전처리 → 베이스라인 → 합성 증강 → 최종 모델 학습 → 판정 → 제출 파일 (RTX 5060 Laptop 실측 약 1시간 20분)
 python run_all.py --skip-train       # 학습 없이 runs/ 의 가중치로 나머지 전부 다시 생성 (약 15분)
-python run_all.py --all-experiments  # 보고서의 비교 모델까지 모두 다시 학습 (약 3~4시간)
+python run_all.py --all-experiments  # 보고서의 비교 모델 · 교차 호기 · 시드 반복까지 모두 다시 학습 (비교 모델 약 3~4시간 + 추가 검증 약 5시간)
 python run_all.py --from judge       # 특정 단계부터 이어서
 ```
 

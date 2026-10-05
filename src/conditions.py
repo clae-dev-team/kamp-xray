@@ -49,18 +49,20 @@ class Img:
     """사진 한 장의 제품 마스크 · 가장자리 거리 · 띠 · 결 지도 (캐시)."""
     cache = {}
 
+    @staticmethod
+    def from_array(g):
+        full = cv2.threshold(cv2.GaussianBlur(g, (9, 9), 0), 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+        pm = product_mask(g)
+        f = g.astype(np.float32)
+        hp = f - cv2.GaussianBlur(f, (0, 0), 3)
+        tex = np.sqrt(cv2.blur(hp * hp, (15, 15)))
+        bg = cv2.blur(f, (15, 15))
+        return dict(g=g, pm=pm, dist=cv2.distanceTransform(full, cv2.DIST_L2, 3), band=band_mask(g, pm), tex=tex, bg=bg)
+
     @classmethod
     def get(cls, path):
         if path not in cls.cache:
-            g = np.asarray(Image.open(path).convert("L"))
-            full = cv2.threshold(cv2.GaussianBlur(g, (9, 9), 0), 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-            pm = product_mask(g)
-            f = g.astype(np.float32)
-            hp = f - cv2.GaussianBlur(f, (0, 0), 3)
-            tex = np.sqrt(cv2.blur(hp * hp, (15, 15)))
-            bg = cv2.blur(f, (15, 15))
-            cls.cache[path] = dict(g=g, pm=pm, dist=cv2.distanceTransform(full, cv2.DIST_L2, 3),
-                                   band=band_mask(g, pm), tex=tex, bg=bg)
+            cls.cache[path] = cls.from_array(np.asarray(Image.open(path).convert("L")))
         return cls.cache[path]
 
 

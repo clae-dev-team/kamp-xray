@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X-ray 이물 검사</title>
+<style>
+  :root {
+    --bg: #0e1316; --panel: #151c20; --line: #242e34; --line-soft: #1c252a;
+    --text: #e8eef0; --sub: #93a3ab; --faint: #5f6f77;
+    --ok: #35c2a4; --hold: #f0a63c; --ng: #ef5b52; --risk: #e8943a; --truth: #cfd8dc;
+    --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 Pretendard, "Malgun Gothic", sans-serif; letter-spacing: -0.01em;
+    display: grid; grid-template-rows: 60px 1fr; overflow: hidden;
+  }
+  button, select { font: inherit; color: inherit; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+
+  header {
+    display: flex; align-items: center; gap: 20px; padding: 0 24px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 17px; font-weight: 700; margin: 0; }
+  header .model { color: var(--sub); font-size: 13px; }
+  .tally { margin-left: auto; display: flex; gap: 22px; font-size: 13px; color: var(--sub); }
+  .tally b { font-family: var(--mono); font-weight: 600; font-size: 15px; margin-left: 6px; color: var(--text); }
+  .tally .ok b { color: var(--ok); } .tally .hold b { color: var(--hold); } .tally .ng b { color: var(--ng); }
+
+  main { display: grid; grid-template-columns: 292px minmax(0, 1fr) 372px; min-height: 0; }
+
+  /* 왼쪽: 사진 목록 */
+  .list { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 14px 16px 10px; gap: 4px; }
+  .tabs button {
+    background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 0 8px;
+    color: var(--sub); cursor: pointer; font-size: 13px; font-weight: 500;
+  }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); font-weight: 600; }
+  .rows { overflow-y: auto; padding: 0 8px 8px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .row {
+    display: grid; grid-template-columns: 56px 1fr 10px; gap: 12px; align-items: center;
+    width: 100%; padding: 7px 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left;
+  }
+  .row:hover { background: var(--line-soft); }
+  .row[aria-current="true"] { background: #1e2a30; }
+  .row img { width: 56px; height: 44px; object-fit: cover; border-radius: 4px; display: block; background: #000; }
+  .row .t1 { font-size: 13px; font-weight: 500; }
+  .row .t2 { font-size: 12px; color: var(--sub); font-family: var(--mono); letter-spacing: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: transparent; }
+  .dot.합격 { background: var(--ok); } .dot.재검사 { background: var(--hold); } .dot.불합격 { background: var(--ng); }
+  .upload { border-top: 1px solid var(--line); padding: 14px 16px 16px; display: grid; grid-template-columns: 1fr 88px; gap: 8px; }
+  .upload label, .upload select {
+    height: 38px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+    display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 13px; font-weight: 500;
+  }
+  .upload select { padding: 0 8px; }
+  .upload label:hover { border-color: var(--faint); }
+  .upload input { display: none; }
+  .upload p { grid-column: 1 / -1; margin: 2px 0 0; font-size: 12px; color: var(--faint); }
+
+  /* 가운데: 사진 */
+  .view { display: grid; grid-template-rows: 52px 1fr; min-height: 0; min-width: 0; }
+  .bar { display: flex; align-items: center; gap: 18px; padding: 0 24px; border-bottom: 1px solid var(--line); }
+  .bar .name { font-size: 13.5px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .toggles { margin-left: auto; display: flex; gap: 6px; flex: none; }
+  .toggles button {
+    display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: 15px;
+    border: 1px solid var(--line); background: none; cursor: pointer; font-size: 12.5px; color: var(--faint);
+  }
+  .toggles button i { width: 9px; height: 9px; border-radius: 2px; background: var(--faint); }
+  .toggles button[aria-pressed="true"] { color: var(--text); border-color: #3a474e; }
+  .toggles button[aria-pressed="true"] i.b { background: var(--hold); }
+  .toggles button[aria-pressed="true"] i.r { background: var(--risk); }
+  .toggles button[aria-pressed="true"] i.t { background: none; border: 1px dashed var(--truth); }
+  .stage { position: relative; min-height: 0; display: grid; place-items: center; padding: 24px; }
+  #main { display: block; border-radius: 4px; }
+  .lens {
+    position: absolute; right: 24px; bottom: 24px; width: 168px; padding: 8px 8px 6px;
+    background: rgba(14, 19, 22, .92); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .lens canvas { width: 152px; height: 152px; display: block; border-radius: 4px; image-rendering: pixelated; }
+  .lens div { font-size: 11.5px; color: var(--sub); margin-top: 5px; text-align: center; }
+  .empty { color: var(--faint); font-size: 14px; }
+
+  /* 오른쪽: 판정 */
+  .side { border-left: 1px solid var(--line); overflow-y: auto; padding: 26px 28px 24px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .verdict { font-size: 46px; font-weight: 800; line-height: 1.1; letter-spacing: -0.03em; }
+  .verdict.합격 { color: var(--ok); } .verdict.재검사 { color: var(--hold); } .verdict.불합격 { color: var(--ng); }
+  .why { color: var(--sub); margin: 8px 0 0; min-height: 42px; }
+  h2 { font-size: 12px; font-weight: 600; color: var(--faint); margin: 28px 0 10px; letter-spacing: 0.02em; }
+  svg { display: block; width: 100%; overflow: visible; }
+  svg text { font-family: var(--mono); font-size: 11px; fill: var(--sub); }
+  svg text.k { font-family: Pretendard, "Malgun Gothic", sans-serif; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { font-weight: 500; color: var(--faint); font-size: 12px; text-align: left; padding: 0 0 6px; border-bottom: 1px solid var(--line); }
+  td { padding: 8px 0; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th.r, td.r { text-align: right; }
+  tr.sig { cursor: pointer; }
+  tr.sig:hover td { background: var(--line-soft); }
+  tr.sig[aria-selected="true"] td:first-child { color: var(--text); font-weight: 700; }
+  td.no { width: 26px; color: var(--faint); font-family: var(--mono); }
+  td.sc { width: 58px; font-family: var(--mono); }
+  td.vd { width: 58px; font-weight: 600; }
+  td.vd.재검사 { color: var(--hold); } td.vd.불합격 { color: var(--ng); }
+  td.at { color: var(--sub); padding-left: 14px; }
+  .none { color: var(--sub); font-size: 13px; }
+  .meter { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 8px 0 8px; }
+  .meter i { display: block; height: 100%; background: var(--risk); border-radius: 3px; }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; letter-spacing: 0; }
+  .big small { font-family: Pretendard, "Malgun Gothic", sans-serif; font-size: 13px; font-weight: 400; color: var(--sub); margin-left: 8px; }
+  .note { font-size: 12.5px; color: var(--faint); margin: 0; }
+  .kv { display: grid; grid-template-columns: 1fr auto; row-gap: 6px; font-size: 13px; color: var(--sub); }
+  .kv b { font-family: var(--mono); font-weight: 500; color: var(--text); text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <h1>X-ray 이물 검사</h1>
+  <span class="model" id="model"></span>
+  <div class="tally">
+    <span>검사<b id="n-all">0</b></span>
+    <span class="ok">합격<b id="n-합격">0</b></span>
+    <span class="hold">재검사<b id="n-재검사">0</b></span>
+    <span class="ng">불합격<b id="n-불합격">0</b></span>
+  </div>
+</header>
+<main>
+  <section class="list">
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div class="rows" id="rows"></div>
+    <div class="upload">
+      <label>사진 올리기<input type="file" id="file" accept="image/*,.bmp"></label>
+      <select id="machine" title="장비">
+        <option value="">장비 자동</option><option value="1">1호기</option><option value="2">2호기</option><option value="3">3호기</option>
+      </select>
+      <p>색 표시가 있는 원본은 표시를 지우고 판정합니다.</p>
+    </div>
+  </section>
+
+  <section class="view">
+    <div class="bar">
+      <span class="name" id="name"></span>
+      <div class="toggles">
+        <button id="tg-box" aria-pressed="true"><i class="b"></i>검출 위치</button>
+        <button id="tg-risk" aria-pressed="false"><i class="r"></i>놓치기 쉬운 구역</button>
+        <button id="tg-truth" aria-pressed="false"><i class="t"></i>정답 위치</button>
+      </div>
+    </div>
+    <div class="stage" id="stage">
+      <canvas id="main"></canvas>
+      <div class="lens" id="lens" hidden><canvas id="zoom" width="19" height="19"></canvas><div id="lens-cap"></div></div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="verdict" id="verdict">&nbsp;</div>
+    <p class="why" id="why">왼쪽에서 사진을 고르면 판정이 표시됩니다.</p>
+
+    <h2>이물 점수와 기준선</h2>
+    <svg id="scale" viewBox="0 0 316 64" height="64"></svg>
+
+    <h2>검출 위치</h2>
+    <div id="signals"></div>
+
+    <h2>놓치기 쉬운 구역</h2>
+    <div class="big" id="risk-n">-</div>
+    <div class="meter"><i id="risk-bar" style="width:0"></i></div>
+    <p class="note">지름 2px, 주변보다 15% 어두운 옅은 이물이 있었다면 놓쳤을 가능성이 높은 자리입니다. 재검사 때 먼저 볼 곳입니다.</p>
+
+    <h2>처리</h2>
+    <div class="kv">
+      <span>장비</span><b id="k-machine">-</b>
+      <span>사진 크기</span><b id="k-size">-</b>
+      <span>판정 시간</span><b id="k-infer">-</b>
+      <span>구역 계산</span><b id="k-explain">-</b>
+    </div>
+    <p class="note" id="guarantee" style="margin-top:22px"></p>
+  </aside>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const COLOR = { 합격: '#35c2a4', 재검사: '#f0a63c', 불합격: '#ef5b52' };
+const st = { info: null, kind: 'ng', cur: null, res: null, sel: 0, img: null, risk: null, seen: {}, show: { box: true, risk: false, truth: false } };
+
+function label(id) {
+  const m = id.match(/^m(\d)_\d+_(\d{4})(\d\d)(\d\d)_(\d\d)(\d\d)(\d\d)\((\d+)\)/);
+  return m ? { t1: `${m[3]}월 ${m[4]}일 ${m[5]}:${m[6]}:${m[7]}`, t2: `${m[1]}호기 · ${m[8]}번` } : { t1: id, t2: '' };
+}
+
+async function init() {
+  st.info = await (await fetch('/api/info')).json();
+  $('model').textContent = `최종 모델 ${st.info.model} · 합격선 ${st.info.t_low.toFixed(2)} · 불합격선 ${st.info.t_high.toFixed(2)}`;
+  $('guarantee').textContent = '기준선 보장: ' + st.info.guarantee;
+  $('tabs').innerHTML = Object.entries(st.info.kinds).filter(([k]) => st.info.samples[k].length)
+    .map(([k, v]) => `<button role="tab" data-k="${k}">${v}</button>`).join('');
+  $('tabs').onclick = e => { if (e.target.dataset.k) { st.kind = e.target.dataset.k; rows(); } };
+  rows();
+  drawScale();
+  const first = st.info.samples[st.kind][0];
+  if (first) pick(st.kind, first.id);
+}
+
+function rows() {
+  [...$('tabs').children].forEach(b => b.setAttribute('aria-selected', b.dataset.k === st.kind));
+  $('rows').innerHTML = st.info.samples[st.kind].map(s => {
+    const l = label(s.id), key = st.kind + '/' + s.id;
+    return `<button class="row" data-id="${encodeURIComponent(s.id)}" aria-current="${st.cur === key}">
+      <img loading="lazy" src="/api/thumb?kind=${st.kind}&id=${encodeURIComponent(s.id)}" alt="">
+      <span><div class="t1">${l.t1}</div><div class="t2">${l.t2}</div></span>
+      <span class="dot ${st.seen[key] || ''}"></span></button>`;
+  }).join('');
+  $('rows').onclick = e => { const r = e.target.closest('.row'); if (r) pick(st.kind, decodeURIComponent(r.dataset.id)); };
+}
+
+async function pick(kind, id) {
+  st.cur = kind + '/' + id;
+  const res = await (await fetch(`/api/inspect?kind=${kind}&id=${encodeURIComponent(id)}`)).json();
+  if (st.cur !== kind + '/' + id) return;
+  show(res);
+}
+
+async function show(res) {
+  st.res = res; st.sel = 0;
+  const key = res.kind + '/' + res.id;
+  if (!st.seen[key]) {
+    st.seen[key] = res.verdict;
+    $('n-all').textContent = Object.keys(st.seen).length;
+    for (const v of ['합격', '재검사', '불합격']) $('n-' + v).textContent = Object.values(st.seen).filter(x => x === v).length;
+  }
+  [st.img, st.risk] = await Promise.all([load(res.image), load(res.risk)]);
+  rowsMark();
+  const l = label(res.id);
+  $('name').textContent = res.kind === 'upload' ? res.id + (res.cleaned ? '  ·  색 표시 지움' : '') : `${l.t2} · ${l.t1}`;
+  $('tg-truth').style.display = res.truth ? '' : 'none';
+  panel();
+  draw();
+}
+
+function rowsMark() {
+  [...$('rows').children].forEach(r => {
+    const key = st.kind + '/' + decodeURIComponent(r.dataset.id);
+    r.setAttribute('aria-current', key === st.cur);
+    r.lastElementChild.className = 'dot ' + (st.seen[key] || '');
+  });
+}
+
+const load = src => new Promise(ok => { const i = new Image(); i.onload = () => ok(i); i.src = src; });
+
+function panel() {
+  const r = st.res, n = r.boxes.length;
+  const v = $('verdict'); v.textContent = r.verdict; v.className = 'verdict ' + r.verdict;
+  $('why').textContent = r.verdict === '합격'
+    ? `합격선 ${r.t_low.toFixed(2)}을 넘는 신호가 없습니다. 가장 높은 점수는 ${r.top.toFixed(2)}입니다.`
+    : r.verdict === '재검사'
+      ? `이물로 보이는 신호가 ${n}곳 있습니다. 사람이 확인한 뒤 결정합니다.`
+      : `뚜렷한 이물 신호가 있습니다. 표시된 ${n}곳을 확인하고 폐기합니다.`;
+  drawScale();
+  $('signals').innerHTML = n ? `<table><thead><tr><th></th><th>점수</th><th>판정</th><th style="padding-left:14px">자리</th></tr></thead><tbody>` +
+    r.boxes.map((b, i) => `<tr class="sig" data-i="${i}" aria-selected="${i === st.sel}"><td class="no">${i + 1}</td><td class="sc">${b.score.toFixed(2)}</td>
+      <td class="vd ${b.verdict}">${b.verdict}</td>
+      <td class="at">${b.band ? '어두운 띠 안' : '띠 밖'} · 가장자리에서 ${Math.round(b.edge)}px · 주변 결 ${b.texture}</td></tr>`).join('') + '</tbody></table>'
+    : '<p class="none">합격선을 넘는 신호가 없습니다.</p>';
+  $('signals').onclick = e => { const t = e.target.closest('.sig'); if (t) { st.sel = +t.dataset.i; panel(); draw(); } };
+  $('risk-n').innerHTML = `${(r.risk_area * 100).toFixed(0)}%<small>제품 면적 가운데</small>`;
+  $('risk-bar').style.width = Math.min(100, r.risk_area * 100) + '%';
+  $('k-machine').textContent = r.machine + '호기';
+  $('k-size').textContent = `${r.w} × ${r.h}`;
+  $('k-infer').textContent = r.ms.infer.toFixed(0) + ' ms';
+  $('k-explain').textContent = r.ms.explain.toFixed(0) + ' ms';
+}
+
+function drawScale() {
+  const W = 316, x = s => 4 + s * (W - 8), i = st.info, r = st.res;
+  if (!i) return;
+  let s = `<rect x="${x(0)}" y="26" width="${x(i.t_low) - x(0) - 1}" height="6" rx="3" fill="#35c2a4" opacity=".28"/>
+    <rect x="${x(i.t_low) + 1}" y="26" width="${x(i.t_high) - x(i.t_low) - 2}" height="6" fill="#f0a63c" opacity=".34"/>
+    <rect x="${x(i.t_high) + 1}" y="26" width="${x(1) - x(i.t_high) - 1}" height="6" rx="3" fill="#ef5b52" opacity=".34"/>`;
+  for (const [t, name, tx] of [[i.t_low, '합격선', x(i.t_low) - 6], [i.t_high, '불합격선', W - 2]])
+    s += `<line x1="${x(t)}" x2="${x(t)}" y1="18" y2="40" stroke="#93a3ab" stroke-width="1"/>
+      <text class="k" x="${tx}" y="56" text-anchor="end">${name} <tspan style="font-family:var(--mono)">${t.toFixed(2)}</tspan></text>`;
+  if (r) {
+    r.boxes.slice().reverse().forEach((b, k) => {
+      const idx = r.boxes.length - 1 - k;
+      s += `<circle cx="${x(b.score)}" cy="29" r="${idx === st.sel ? 6 : 4.5}" fill="${COLOR[b.verdict]}" stroke="#0e1316" stroke-width="2"/>`;
+    });
+    if (!r.boxes.length) s += `<circle cx="${x(r.top)}" cy="29" r="5" fill="#35c2a4" stroke="#0e1316" stroke-width="2"/>`;
+    const top = r.boxes.length ? r.boxes[st.sel].score : r.top;
+    s += `<text x="${Math.min(W - 14, Math.max(14, x(top)))}" y="11" text-anchor="middle" style="fill:#e8eef0;font-size:12px">${top.toFixed(2)}</text>`;
+  }
+  $('scale').innerHTML = s;
+}
+
+function draw() {
+  const r = st.res, c = $('main'), stage = $('stage');
+  if (!r || !st.img) return;
+  const availW = stage.clientWidth - 48, availH = stage.clientHeight - 48;
+  const k = Math.min(availW / r.w, availH / r.h), dpr = window.devicePixelRatio || 1;
+  const cw = Math.floor(r.w * k), ch = Math.floor(r.h * k);
+  c.style.width = cw + 'px'; c.style.height = ch + 'px';
+  c.width = cw * dpr; c.height = ch * dpr;
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.drawImage(st.img, 0, 0, cw, ch);
+  if (st.show.risk) g.drawImage(st.risk, 0, 0, cw, ch);
+  if (st.show.truth && r.truth) {
+    g.setLineDash([4, 3]); g.lineWidth = 1; g.strokeStyle = '#cfd8dc';
+    for (const [x0, y0, x1, y1] of r.truth) g.strokeRect(x0 * k - 5, y0 * k - 5, (x1 - x0) * k + 10, (y1 - y0) * k + 10);
+    g.setLineDash([]);
+  }
+  if (st.show.box) r.boxes.forEach((b, i) => {
+    const pad = 7, x0 = b.x0 * k - pad, y0 = b.y0 * k - pad, w = (b.x1 - b.x0) * k + 2 * pad, h = (b.y1 - b.y0) * k + 2 * pad, L = Math.min(9, w / 3);
+    g.strokeStyle = COLOR[b.verdict]; g.lineWidth = i === st.sel ? 2.5 : 1.5;
+    g.beginPath();
+    for (const [cx, cy, sx, sy] of [[x0, y0, 1, 1], [x0 + w, y0, -1, 1], [x0, y0 + h, 1, -1], [x0 + w, y0 + h, -1, -1]]) {
+      g.moveTo(cx + sx * L, cy); g.lineTo(cx, cy); g.lineTo(cx, cy + sy * L);
+    }
+    g.stroke();
+    g.font = '600 12px "JetBrains Mono", Consolas, monospace'; g.fillStyle = COLOR[b.verdict];
+    g.textBaseline = 'bottom';
+    const below = y0 < 18;
+    g.fillText(String(i + 1), x0, below ? y0 + h + 16 : y0 - 4);
+  });
+  lens();
+}
+
+function lens() {
+  const r = st.res, b = r.boxes[st.sel];
+  $('lens').hidden = !b;
+  if (!b) return;
+  const z = $('zoom').getContext('2d'), cx = Math.round((b.x0 + b.x1) / 2), cy = Math.round((b.y0 + b.y1) / 2);
+  z.imageSmoothingEnabled = false;
+  z.fillStyle = '#000'; z.fillRect(0, 0, 19, 19);
+  z.drawImage(st.img, cx - 9, cy - 9, 19, 19, 0, 0, 19, 19);
+  $('lens-cap').textContent = `${st.sel + 1}번 위치 8배 확대`;
+}
+
+for (const k of ['box', 'risk', 'truth']) $('tg-' + k).onclick = e => {
+  st.show[k] = !st.show[k]; e.currentTarget.setAttribute('aria-pressed', st.show[k]); draw();
+};
+window.addEventListener('resize', draw);
+window.addEventListener('keydown', e => {
+  if (!['ArrowDown', 'ArrowUp'].includes(e.key) || !st.info) return;
+  const list = st.info.samples[st.kind], i = list.findIndex(s => st.kind + '/' + s.id === st.cur);
+  const n = list[Math.max(0, Math.min(list.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+  if (n) { e.preventDefault(); pick(st.kind, n.id).then(() => document.querySelector('.row[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })); }
+});
+$('file').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  st.cur = 'upload/' + f.name;
+  const res = await (await fetch(`/api/upload?name=${encodeURIComponent(f.name)}&machine=${$('machine').value}`, { method: 'POST', body: f })).json();
+  e.target.value = '';
+  if (res.error) { $('why').textContent = res.error; return; }
+  show(res);
+};
+init();
+</script>
+</body>
+</html>

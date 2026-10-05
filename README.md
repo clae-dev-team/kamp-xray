@@ -43,6 +43,18 @@ python src/speed.py --yolo ratio3_e100
 | 시드 반복 | `src/uncertainty.py --seeds` | 시드 0 · 1 · 2 모두 F1 0.993(놓침 0 · 오경보 2), 합성 검출률 55.3~55.6%, 실제 이물 최저 점수 0.635~0.657 | `results/uncertainty/seeds.json` |
 | 교차 호기 | `src/cross_machine.py` | 두 호기로 학습 → 뺀 호기 전체로 시험. 합성 3배: 재현율 100 · 99.7 · 99.7%(오경보 10 · 5 · 5). 합성 없음: 3호기를 빼면 재현율 89.4%(놓침 39) | `results/cross_machine/summary.csv` |
 | 진짜 점 이식 | `src/augment_paste.py`, `src/paste_eval.py` | 실제 이물 점을 투과율로 오려 옅게 옮겨 붙인 시험편 3,504개. 검출률: 규칙 기반 38.7% · 합성 없음 15.2% · CNN 56.6% · 최종(구 합성) 68.6% · 이식 학습 68.5% · 구 합성 + 이식 71.0% | `results/paste_eval/summary.json` |
+| 정답 없는 영상 사후 대조 | `src/unlabeled_check.py` | 학습 · 기준선에 쓰지 않은 색 표시 자리(정답 없는 2,032장, 사각형 표시 3,313개)와 최종 모델의 예측을 대조. 재현율 99.3%(98.9~99.5), 촬영일이 학습과 겹치지 않는 1,897장도 99.3%. 가짜 표시 자리 반응 2/2,024. 다른 PC 에서 돌려도 결과 동일 | `results/unlabeled_check/summary.json` |
+| 인접 프레임 기준 이식 | `src/reference_residual.py`, `src/augment_paste.py --mode ref\|all3`, `src/paste_eval.py --source ref` | 같은 호기에서 몇 초 차이로 찍힌 영상을 기준으로 이물을 떼어, 둘레 구조가 닮은 자리에 옮김(팀 내 위치 강건성 분석의 방법). 배경 밝기 차로 생기는 네모 자국을 보정. 시험편 3,048개 검출률: 규칙 기반 34.2% · 합성 없음 24.7% · 최종 65.5% | `results/paste_eval_ref/summary.json` |
+
+## 현장 활용 분석 (2026-10-05)
+
+기본 실행(`python run_all.py`)의 마지막 세 단계입니다. 저장된 점수와 예측만 다시 계산합니다.
+
+| 분석 | 코드 | 결과 | 위치 |
+|---|---|---|---|
+| 비용 기반 운영점 | `src/operating_point.py` | 재검사 1건의 비용을 1로 두고 놓침 비용(10~10,000배)과 불량률(0.01~1%)별로 비용이 최소인 합격선 · 불합격선. 보장 기준선은 12개 조건 모두에서 최소 비용의 0.82~1.20배 | `results/operating_point/cost_table.csv` |
+| 검사 우선순위 | `src/operating_point.py` | 점수 높은 순으로 2% 검사 시 불량 89%, 5% 검사 시 99.7% 포착(불량률 0.1%) | `results/operating_point/priority.csv` |
+| 공정 점검 신호 | `src/process_signal.py` | 호기 · 날짜별 영상당 이물 수와 띠 밖 이물 비율의 관리도. 7월 15일까지 영상당 3.0개 → 7월 21~22일부터 1.0~1.1개, 이후 띠 밖 이물 증가 | `results/process_signal/` |
 
 ## 검사 화면 (선택)
 

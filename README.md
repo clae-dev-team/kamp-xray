@@ -95,11 +95,25 @@ python src/repro_check.py --a <원래 폴더> --b <다시 돌린 폴더>   # 결
 KAMP에서 받은 X-ray 검사장비 AI 데이터셋을 사용합니다. 원본 경로는 `configs/data.yaml`의 `raw_root`, `label_dir`에서 지정합니다.
 원본 이미지 일부에 포함된 색상 사각형 표시는 전처리 단계에서 제거하며, 방법과 영향은 결과보고서에 기술합니다.
 
+### 제출 압축 파일에 들어 있는 것
+
+| 폴더 | 내용 |
+| --- | --- |
+| `src/`, `configs/`, `demo/`, `run_all.py` | 코드와 설정 |
+| `data/clean`, `data/splits`, `data/manifest.csv` | 색 표시를 지운 정제 영상 2,532장, 라벨 500개, 학습 · 검증 · 시험 분할 목록 |
+| `data/aug` | 최종 모델의 학습 세트(실제 350장 + 합성 1,050장) |
+| `data/normal` | 이물만 지운 정상 영상 150장(검증 77 · 시험 73) |
+| `runs/ratio3_e100/weights/final.pt`, `runs/cnn_aug/cnn.pt` | 최종 모델과 비교용 CNN의 가중치 |
+| `results/submission` | 시험 영상 73장의 예측 결과(판정, 박스, 기준선) |
+| `results/` 나머지 | 보고서의 표와 그림에 쓴 결과 요약 |
+
+합성 평가 세트, 테스트피스 등 나머지 데이터는 용량이 커서 넣지 않았고 `run_all.py`가 다시 만듭니다. `data/*.yaml`과 목록 파일의 경로는 실행할 때 그 폴더에 맞게 다시 쓰입니다.
+
 ## 한 번에 실행
 
 ```bash
-python run_all.py                    # 전처리 → 베이스라인 → 합성 증강 → 최종 모델 학습 → 판정 → 제출 파일 (RTX 5060 Laptop 실측 약 1시간 20분)
-python run_all.py --skip-train       # 학습 없이 runs/ 의 가중치로 나머지 전부 다시 생성 (약 15분)
+python run_all.py                    # 전처리 → 베이스라인 → 합성 증강 → 최종 모델 학습 → 판정 → 제출 파일 (RTX 5060 Laptop 실측 약 1시간 50분)
+python run_all.py --skip-train       # 학습 없이 runs/ 의 가중치로 나머지 전부 다시 생성 (약 40분)
 python run_all.py --all-experiments  # 보고서의 비교 모델 · 교차 호기 · 시드 반복까지 모두 다시 학습 (비교 모델 약 3~4시간 + 추가 검증 약 5시간)
 python run_all.py --from judge       # 특정 단계부터 이어서
 ```

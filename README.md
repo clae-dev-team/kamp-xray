@@ -44,7 +44,7 @@ python src/speed.py --yolo ratio3_e100
 | 교차 호기 | `src/cross_machine.py` | 두 호기로 학습 → 뺀 호기 전체로 시험. 합성 3배: 재현율 100 · 99.7 · 99.7%(오경보 10 · 5 · 5). 합성 없음: 3호기를 빼면 재현율 89.4%(놓침 39) | `results/cross_machine/summary.csv` |
 | 진짜 점 이식 | `src/augment_paste.py`, `src/paste_eval.py` | 실제 이물 점을 투과율로 오려 옅게 옮겨 붙인 시험편 3,504개. 검출률: 규칙 기반 38.7% · 합성 없음 15.2% · CNN 56.6% · 최종(구 합성) 68.6% · 이식 학습 68.5% · 구 합성 + 이식 71.0% | `results/paste_eval/summary.json` |
 | 정답 없는 영상 사후 대조 | `src/unlabeled_check.py` | 학습 · 기준선에 쓰지 않은 색 표시 자리(정답 없는 2,032장, 사각형 표시 3,313개)와 최종 모델의 예측을 대조. 재현율 99.3%(98.9~99.5), 촬영일이 학습과 겹치지 않는 1,897장도 99.3%. 가짜 표시 자리 반응 2/2,024. 다른 PC 에서 돌려도 결과 동일 | `results/unlabeled_check/summary.json` |
-| 인접 프레임 기준 이식 | `src/reference_residual.py`, `src/augment_paste.py --mode ref\|all3`, `src/paste_eval.py --source ref` | 같은 호기에서 몇 초 차이로 찍힌 영상을 기준으로 이물을 떼어, 둘레 구조가 닮은 자리에 옮김(팀 내 위치 강건성 분석의 방법). 배경 밝기 차로 생기는 네모 자국을 보정. 시험편 3,048개 검출률: 규칙 기반 34.2% · 합성 없음 24.7% · 최종 65.5% | `results/paste_eval_ref/summary.json` |
+| 인접 프레임 기준 이식 | `src/reference_residual.py`, `src/augment_paste.py --mode ref\|all3`, `src/paste_eval.py --source ref` | 같은 호기에서 몇 초 차이로 찍힌 영상을 기준으로 이물을 떼어, 둘레 구조가 닮은 자리에 옮김(팀 내 위치 강건성 분석의 방법). 배경 밝기 차로 생기는 네모 자국을 보정. 시험편 3,048개 검출률: 규칙 기반 34.2% · 합성 없음 24.7% · 최종 65.5%. 학습에 섞어도 이득 없음(세 가지 혼합 65.2%), 구조 맞춤 자리에만 넣어 학습하면 같은 방식의 시험에서만 높음(68.3% 대 구 합성 24.6%) | `results/paste_eval_ref/summary.json` |
 
 ## 현장 활용 분석 (2026-10-05)
 

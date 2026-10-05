@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 PY = sys.executable
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
           "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "zone_rules", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam",
-          "uncertainty", "extra", "paste_eval", "operating_point", "unlabeled_check", "process_signal"]
+          "uncertainty", "extra", "paste_eval", "paste_eval_ref", "operating_point", "unlabeled_check", "process_signal"]
 
 
 def sh(*args, log=None):
@@ -137,8 +137,9 @@ def main():
     extra = pipe.get("extra", []) if args.all_experiments else []
 
     def run_extra():
-        for mode in sorted({e["data"][len("data/aug_"):-len(".yaml")] for e in extra if e.get("data", "").startswith("data/aug_")}):
-            sh("src/augment_paste.py", "--mode", mode, log=f"augment_paste_{mode}.log")
+        for tag in sorted({e["data"][len("data/aug_"):-len(".yaml")] for e in extra if e.get("data", "").startswith("data/aug_")}):
+            mode, place = (tag[:-3], "context") if tag.endswith("ctx") else (tag, "random")      # aug_refctx → --mode ref --placement context
+            sh("src/augment_paste.py", "--mode", mode, "--placement", place, log=f"augment_paste_{tag}.log")
         for e in extra:
             train(e, skip=args.skip_train)
             sh("src/synth_eval.py", "--yolo", e["name"], log=f"synth_eval_{e['name']}.log")
@@ -156,6 +157,9 @@ def main():
     stage("paste_eval", lambda: sh("src/paste_eval.py", "--models", *[e["name"] for e in exps if e["name"] == "ratio0_e100"],
                                    final["name"], *[e["name"] for e in extra if e.get("seed") is None],
                                    *([cnn_name] if cnn else []), log="paste_eval.log"))
+    stage("paste_eval_ref", lambda: sh("src/paste_eval.py", "--source", "ref", "--models", *[e["name"] for e in exps if e["name"] == "ratio0_e100"],
+                                       final["name"], *[e["name"] for e in extra if e.get("seed") is None],
+                                       *([cnn_name] if cnn else []), log="paste_eval_ref.log"))
 
     # 현장 활용 분석: 비용 기반 운영점 · 검사 우선순위, 정답 없는 영상 사후 대조, 공정 점검 신호
     stage("operating_point", lambda: sh("src/operating_point.py", "--yolo", final["name"], log="operating_point.log"))

@@ -54,6 +54,7 @@ python src/speed.py --yolo ratio3_e100
 |---|---|---|---|
 | 비용 기반 운영점 | `src/operating_point.py` | 재검사 1건의 비용을 1로 두고 놓침 비용(10~10,000배)과 불량률(0.01~1%)별로 비용이 최소인 합격선 · 불합격선. 보장 기준선은 12개 조건 모두에서 최소 비용의 0.82~1.20배 | `results/operating_point/cost_table.csv` |
 | 검사 우선순위 | `src/operating_point.py` | 점수 높은 순으로 2% 검사 시 불량 89%, 5% 검사 시 99.7% 포착(불량률 0.1%) | `results/operating_point/priority.csv` |
+| 우선순위 세 단 | `src/operating_point.py` | 1순위 재검사 구간(점수순) → 2순위 합격했지만 약한 신호(0.3 이상)가 있는 제품 → 3순위 나머지. 1순위까지 사람이 보는 양은 제품의 1.4%, 걸러지는 불량 99.4%. 정답 없는 영상에서 합격으로 나간 7장이 모두 2순위에 듦 | `results/operating_point/tiers.csv` |
 | 공정 점검 신호 | `src/process_signal.py` | 호기 · 날짜별 영상당 이물 수와 띠 밖 이물 비율의 관리도. 7월 15일까지 영상당 3.0개 → 7월 21~22일부터 1.0~1.1개, 이후 띠 밖 이물 증가 | `results/process_signal/` |
 
 ## 검사 화면 (선택)

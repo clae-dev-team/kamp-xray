@@ -37,6 +37,7 @@ from train_yolo import weights_path
 ROOT = Path(__file__).resolve().parents[1]
 KINDS = {"ng": "실제 불량", "ok": "정상", "faint": "옅은 이물"}
 RISK_RGB = (232, 148, 58)
+WEAK = 0.3                    # 2순위(약한 신호) 하한. operating_point.py · zone_rules.py 와 같은 값
 
 
 class State:
@@ -109,6 +110,9 @@ def inspect(gray, machine, truth=None, cleaned=False):
                           verdict="불합격" if s >= S.t_high else "재검사", band=bool(I["band"][cy, cx]),
                           edge=round(float(I["dist"][cy, cx]), 1),
                           texture="매끈" if t < S.tex_q[0] else "중간" if t < S.tex_q[1] else "거침"))
+    wk = (conf >= WEAK) & (conf < S.t_low)
+    weak = [dict(x0=float(x0), y0=float(y0), x1=float(x1), y1=float(y1), score=round(float(s), 3))
+            for (x0, y0, x1, y1), s in sorted(zip(xyxy[wk], conf[wk]), key=lambda b: -b[1])[:5]]
     r = risk_map(S.risk, I, machine)
     ok = ~np.isnan(r)
     hi = np.nan_to_num(r) >= S.high
@@ -117,7 +121,7 @@ def inspect(gray, machine, truth=None, cleaned=False):
     t2 = time.perf_counter()
     return dict(w=w, h=h, machine=machine, top=round(top, 3), t_low=S.t_low, t_high=S.t_high,
                 verdict="불합격" if top >= S.t_high else "재검사" if top >= S.t_low else "합격",
-                boxes=boxes, truth=truth, cleaned=cleaned, image=png_url(gray), risk=png_url(over),
+                boxes=boxes, weak=weak, truth=truth, cleaned=cleaned, image=png_url(gray), risk=png_url(over),
                 risk_area=round(float(hi[ok].mean()) if ok.any() else 0.0, 3),
                 ms=dict(infer=round((t1 - t0) * 1000, 1), explain=round((t2 - t1) * 1000, 1)))
 
@@ -143,7 +147,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/":
             return self.send((ROOT / "demo" / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/api/info":
-            return self.send(dict(model=S.name, t_low=S.t_low, t_high=S.t_high, guarantee=S.guarantee, kinds=KINDS,
+            return self.send(dict(model=S.name, t_low=S.t_low, t_high=S.t_high, guarantee=S.guarantee, weak=WEAK, kinds=KINDS,
                                   samples=S.samples))
         if u.path == "/api/thumb":
             p = S.paths.get((q.get("kind"), unquote(q.get("id", ""))))

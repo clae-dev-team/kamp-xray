@@ -54,6 +54,10 @@
   .row .t2 { font-size: 12px; color: var(--sub); font-family: var(--mono); letter-spacing: 0; }
   .row .sc { font-family: var(--mono); font-size: 12px; color: var(--sub); letter-spacing: 0; padding-right: 4px; }
   .row .dot { margin-right: 2px; }
+  .grp { padding: 12px 8px 6px; font-size: 11.5px; font-weight: 600; color: var(--faint); letter-spacing: 0.02em; display: flex; justify-content: space-between; }
+  .grp:first-child { padding-top: 2px; }
+  .grp b { font-family: var(--mono); font-weight: 500; letter-spacing: 0; }
+  .grp.auto { border-top: 1px solid var(--line); margin-top: 8px; color: var(--sub); font-weight: 400; }
   .qhead { padding: 0 16px 8px; font-size: 12px; color: var(--faint); display: flex; justify-content: space-between; align-items: center; }
   .qhead button { background: none; border: 1px solid var(--line); border-radius: 12px; padding: 2px 10px; font-size: 12px; color: var(--sub); cursor: pointer; }
   .qhead button:hover { border-color: var(--faint); color: var(--text); }
@@ -194,7 +198,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const COLOR = { 합격: '#35c2a4', 재검사: '#f0a63c', 불합격: '#ef5b52' };
-const st = { info: null, kind: 'ng', cur: null, res: null, sel: 0, img: null, risk: null, seen: {}, top: {}, show: { box: true, risk: false, truth: false } };
+const st = { info: null, kind: 'ng', cur: null, res: null, sel: 0, img: null, risk: null, seen: {}, top: {}, cnt: {}, show: { box: true, risk: false, truth: false } };
 
 function label(id) {
   const m = id.match(/^m(\d)_\d+_(\d{4})(\d\d)(\d\d)_(\d\d)(\d\d)(\d\d)\((\d+)\)/);
@@ -216,24 +220,46 @@ async function init() {
 }
 
 // 지금 목록에 보일 항목: 묶음이면 그 사진들, '재검사 대기'면 검사한 사진 중 합격이 아닌 것을 점수 높은 순으로
+// 재검사 대기의 우선순위: 1순위 = 재검사 구간(점수 높은 순, 같으면 신호가 많은 순),
+// 2순위 = 합격했지만 약한 신호(하한 이상)가 있는 제품(점수 높은 순). 불합격은 자동 배출이라 건수만 센다.
+function tiers() {
+  const keys = Object.keys(st.seen).filter(k => !k.startsWith('upload/'));
+  const obj = k => ({ kind: k.slice(0, k.indexOf('/')), id: k.slice(k.indexOf('/') + 1) });
+  const order = (a, b) => (st.top[b] - st.top[a]) || (st.cnt[b] - st.cnt[a]);
+  return {
+    t1: keys.filter(k => st.seen[k] === '재검사').sort(order).map(obj),
+    t2: keys.filter(k => st.seen[k] === '합격' && st.top[k] >= st.info.weak).sort(order).map(obj),
+    auto: keys.filter(k => st.seen[k] === '불합격').length,
+  };
+}
+
 function items() {
   if (st.kind !== 'queue') return st.info.samples[st.kind].map(s => ({ kind: st.kind, id: s.id }));
-  return Object.keys(st.seen).filter(k => st.seen[k] !== '합격' && !k.startsWith('upload/'))
-    .sort((a, b) => st.top[b] - st.top[a]).map(k => ({ kind: k.slice(0, k.indexOf('/')), id: k.slice(k.indexOf('/') + 1) }));
+  const t = tiers();
+  return [...t.t1, ...t.t2];
 }
 
 function rows() {
   [...$('tabs').children].forEach(b => b.setAttribute('aria-selected', b.dataset.k === st.kind));
   const list = items(), q = st.kind === 'queue';
   $('runall').style.display = q ? 'none' : '';
-  $('qinfo').textContent = q ? (list.length ? `사람이 볼 ${list.length}건 · 점수 높은 순` : '검사한 사진 가운데 재검사 · 불합격이 여기에 쌓입니다') : `${list.length}장`;
-  $('rows').innerHTML = list.map(s => {
+  const row = s => {
     const l = label(s.id), key = s.kind + '/' + s.id;
     return `<button class="row" data-kind="${s.kind}" data-id="${encodeURIComponent(s.id)}" aria-current="${st.cur === key}">
       <img loading="lazy" src="/api/thumb?kind=${s.kind}&id=${encodeURIComponent(s.id)}" alt="">
       <span><div class="t1">${l.t1}</div><div class="t2">${q ? l.t2.split(' · ')[0] + ' · ' + st.info.kinds[s.kind] : l.t2}</div></span>
       ${q ? `<span class="sc">${st.top[key].toFixed(2)}</span>` : `<span class="dot ${st.seen[key] || ''}"></span>`}</button>`;
-  }).join('');
+  };
+  if (q) {
+    const t = tiers();
+    $('qinfo').textContent = list.length ? '점수 높은 순' : '검사한 사진 가운데 사람이 볼 것이 여기에 쌓입니다';
+    $('rows').innerHTML = (t.t1.length ? `<div class="grp"><span>1순위 · 재검사 (반드시 확인)</span><b>${t.t1.length}</b></div>` + t.t1.map(row).join('') : '')
+      + (t.t2.length ? `<div class="grp"><span>2순위 · 약한 신호 (여유 있을 때)</span><b>${t.t2.length}</b></div>` + t.t2.map(row).join('') : '')
+      + (t.auto ? `<div class="grp auto"><span>자동 배출 (사람 확인 없음)</span><b>${t.auto}</b></div>` : '');
+  } else {
+    $('qinfo').textContent = `${list.length}장`;
+    $('rows').innerHTML = list.map(row).join('');
+  }
   $('rows').onclick = e => { const r = e.target.closest('.row'); if (r) pick(r.dataset.kind, decodeURIComponent(r.dataset.id)); };
 }
 
@@ -255,7 +281,7 @@ async function runAll() {
 function record(res) {
   const key = res.kind + '/' + res.id;
   if (st.seen[key]) return;
-  st.seen[key] = res.verdict; st.top[key] = res.top;
+  st.seen[key] = res.verdict; st.top[key] = res.top; st.cnt[key] = res.boxes.length;
   $('n-all').textContent = Object.keys(st.seen).length;
   for (const v of ['합격', '재검사', '불합격']) $('n-' + v).textContent = Object.values(st.seen).filter(x => x === v).length;
 }
@@ -280,7 +306,7 @@ async function show(res) {
 }
 
 function rowsMark() {
-  [...$('rows').children].forEach(r => {
+  [...$('rows').querySelectorAll('.row')].forEach(r => {
     const key = r.dataset.kind + '/' + decodeURIComponent(r.dataset.id);
     r.setAttribute('aria-current', key === st.cur);
     if (st.kind !== 'queue') r.lastElementChild.className = 'dot ' + (st.seen[key] || '');
@@ -293,7 +319,8 @@ function panel() {
   const r = st.res, n = r.boxes.length;
   const v = $('verdict'); v.textContent = r.verdict; v.className = 'verdict ' + r.verdict;
   $('why').textContent = r.verdict === '합격'
-    ? `합격선 ${r.t_low.toFixed(2)}을 넘는 신호가 없습니다. 가장 높은 점수는 ${r.top.toFixed(2)}입니다.`
+    ? (r.weak.length ? `합격선 ${r.t_low.toFixed(2)}을 넘는 신호는 없지만 약한 신호가 ${r.weak.length}곳 있습니다(최고 ${r.top.toFixed(2)}). 여유가 있을 때 확인을 권합니다.`
+      : `합격선 ${r.t_low.toFixed(2)}을 넘는 신호가 없습니다. 가장 높은 점수는 ${r.top.toFixed(2)}입니다.`)
     : r.verdict === '재검사'
       ? `이물로 보이는 신호가 ${n}곳 있습니다. 사람이 확인한 뒤 결정합니다.`
       : `뚜렷한 이물 신호가 있습니다. 표시된 ${n}곳을 확인하고 폐기합니다.`;
@@ -302,7 +329,8 @@ function panel() {
     r.boxes.map((b, i) => `<tr class="sig" data-i="${i}" aria-selected="${i === st.sel}"><td class="no">${i + 1}</td><td class="sc">${b.score.toFixed(2)}</td>
       <td class="vd ${b.verdict}">${b.verdict}</td>
       <td class="at">${b.band ? '어두운 띠 안' : '띠 밖'} · 가장자리에서 ${Math.round(b.edge)}px · 주변 결 ${b.texture}</td></tr>`).join('') + '</tbody></table>'
-    : '<p class="none">합격선을 넘는 신호가 없습니다.</p>';
+    : (r.weak.length ? '<p class="none">합격선을 넘는 신호는 없습니다. 점선으로 표시한 약한 신호: '
+        + r.weak.map(b => b.score.toFixed(2)).join(' · ') + '</p>' : '<p class="none">합격선을 넘는 신호가 없습니다.</p>');
   $('signals').onclick = e => { const t = e.target.closest('.sig'); if (t) { st.sel = +t.dataset.i; panel(); draw(); } };
   $('risk-n').innerHTML = `${(r.risk_area * 100).toFixed(0)}%<small>제품 면적 가운데</small>`;
   $('risk-bar').style.width = Math.min(100, r.risk_area * 100) + '%';
@@ -349,6 +377,11 @@ function draw() {
   if (st.show.truth && r.truth) {
     g.setLineDash([4, 3]); g.lineWidth = 1; g.strokeStyle = '#cfd8dc';
     for (const [x0, y0, x1, y1] of r.truth) g.strokeRect(x0 * k - 5, y0 * k - 5, (x1 - x0) * k + 10, (y1 - y0) * k + 10);
+    g.setLineDash([]);
+  }
+  if (st.show.box && !r.boxes.length) {             // 합격 제품의 약한 신호: 회색 점선 네모 (확인 권장)
+    g.setLineDash([3, 3]); g.lineWidth = 1.2; g.strokeStyle = '#93a3ab';
+    for (const b of r.weak) g.strokeRect(b.x0 * k - 7, b.y0 * k - 7, (b.x1 - b.x0) * k + 14, (b.y1 - b.y0) * k + 14);
     g.setLineDash([]);
   }
   if (st.show.box) r.boxes.forEach((b, i) => {

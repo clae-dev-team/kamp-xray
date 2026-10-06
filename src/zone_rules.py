@@ -33,33 +33,43 @@ from synth_eval import MARGIN, yolo_preds
 from testpiece import HALF
 
 ROOT = Path(__file__).resolve().parents[1]
-MIN_SCORE = 0.05
+MIN_SCORE = 0.05                     # 이보다 점수가 낮은 박스는 버린다 (t_cand 후보의 최솟값과 같음)
 NEAR = HALF + MARGIN                 # ±7px (사양표 채점과 같음)
 NORMAL_DROP = 1                      # A: val 가짜 정상 합격 감소 허용 (장)
 FLAG_MAX = 0.10                      # B: val 가짜 정상 괜한 표시 허용 비율
-T_ZONE_GRID = np.round(np.arange(0.30, 0.6128, 0.02), 3)
-T_CAND_GRID = np.round(np.arange(0.05, 0.61, 0.05), 3)
+T_ZONE_GRID = np.round(np.arange(0.30, 0.6128, 0.02), 3)      # A: 시험할 t_zone 후보 (0.30 부터 0.02 간격, 0.6128 미만)
+T_CAND_GRID = np.round(np.arange(0.05, 0.61, 0.05), 3)        # B: 시험할 t_cand 후보 (0.05 부터 0.05 간격, 0.60 까지)
 
 
 def zone_of(model, high, preds, path_of, machine_of):
-    """박스마다 그 사진의 위험 지도에서 고위험 구역 안인가. 사진 지도는 한 장씩 만들고 버린다(메모리)."""
+    """박스마다 그 사진의 위험 지도에서 고위험 구역 안인가. 사진 지도는 한 장씩 만들고 버린다(메모리).
+
+    model: 놓침 모형, high: 고위험 기준값, preds: 열 img, px, py 인 예측 표,
+    path_of · machine_of: {사진 이름: 경로} · {사진 이름: 호기}. 반환: preds 행 순서의 bool 배열.
+    """
     zone = np.zeros(len(preds), bool)
     for img, idx in preds.groupby("img").groups.items():
         path = path_of[img]
         I = Img.get(path)
         h, w = I["g"].shape
         q = preds.loc[idx]
+        # 박스 중심을 가장 가까운 화소로 반올림하고 영상 안으로 당긴다
         x = np.clip(q.px.round().astype(int).to_numpy(), 0, w - 1)
         y = np.clip(q.py.round().astype(int).to_numpy(), 0, h - 1)
+        # 지도 전체를 계산하지 않고 박스 자리의 값만 뽑아 기준 이물의 놓침 확률을 구한다 (지도는 [y, x] 순서)
         X = design(REF_C, REF_D, I["dist"][y, x], I["band"][y, x], I["bg"][y, x], I["tex"][y, x], machine_of[img])
         r = model.p(X)
-        r[I["pm"][y, x] == 0] = 0.0
+        r[I["pm"][y, x] == 0] = 0.0          # 제품 밖은 위험 0 으로 두어 고위험 구역에서 뺀다
         zone[preds.index.get_indexer(idx)] = r >= high
         Img.cache.pop(path, None)
     return zone
 
 
 def point_zone(model, high, path, machine, xs, ys):
+    """사진 한 장에서 좌표 (xs, ys) 들이 고위험 구역 안인가. zone_of 와 같은 계산을 좌표 배열에 바로 한다.
+
+    path: 사진 경로, machine: 호기, xs · ys: 픽셀 좌표 배열. 반환: 같은 길이의 bool 배열.
+    """
     I = Img.get(path)
     h, w = I["g"].shape
     x, y = np.clip(np.round(xs).astype(int), 0, w - 1), np.clip(np.round(ys).astype(int), 0, h - 1)
@@ -70,7 +80,10 @@ def point_zone(model, high, path, machine, xs, ys):
 
 
 def image_scores(preds, ids):
-    """사진별 (원래 최고 점수, 구역 밖 최고, 구역 안 최고)."""
+    """사진별 (원래 최고 점수, 구역 밖 최고, 구역 안 최고).
+
+    preds: 열 img, score, zone 인 예측 표, ids: 사진 이름 목록. 반환: ids 순서의 배열 셋. 박스가 없으면 0.
+    """
     g = preds.groupby("img")
     raw = g.score.max().reindex(ids, fill_value=0.0).to_numpy()
     out = preds[~preds.zone].groupby("img").score.max().reindex(ids, fill_value=0.0).to_numpy()
@@ -79,13 +92,23 @@ def image_scores(preds, ids):
 
 
 def verdict(raw, out, inn, t_low, t_high, t_zone):
+    """구역별 기준선으로 사진을 합격 / 재검사 / 불합격으로 나눈다.
+
+    raw · out · inn: image_scores 의 세 배열, t_low: 합격선, t_high: 불합격선, t_zone: 고위험 구역 안 박스에 쓰는 기준선.
+    반환: 사진 순서의 문자열 배열.
+    """
+    # 구역 안 점수에 t_low / t_zone 을 곱하면 't_zone 이상'이 '합격선 이상'과 같아져, 합격선 하나로 비교할 수 있다.
+    # 불합격은 바꾸지 않은 원래 최고 점수로 판단한다
     s2 = np.maximum(out, inn * t_low / t_zone)
     v = np.where(s2 < t_low, "합격", np.where(raw >= t_high, "불합격", "재검사"))
     return v
 
 
 def defect_hits(preds, defects):
-    """시험편마다 ±7px 안 박스의 (구역 밖 최고, 구역 안 최고) 점수."""
+    """시험편마다 ±7px 안 박스의 (구역 밖 최고, 구역 안 최고) 점수.
+
+    preds: 열 img, px, py, score, zone. defects: 시험편 표(열 img, cx, cy). 반환: defects 행 순서의 배열 둘, 없으면 0.
+    """
     out = np.zeros(len(defects))
     inn = np.zeros(len(defects))
     by = dict(tuple(preds.groupby("img")))
@@ -104,7 +127,11 @@ def defect_hits(preds, defects):
 
 
 def stray_spots(preds, defects, src_of):
-    """시험편과 무관한 박스(±7px 밖)를 (원본 사진, 6px 격자)로 묶은 표."""
+    """시험편과 무관한 박스(±7px 밖)를 (원본 사진, 6px 격자)로 묶은 표.
+
+    src_of: {시험편 사진 이름: 배경으로 쓴 원본 사진 이름}. 반환: preds 에서 남은 행에 '자리' 열을 붙인 표.
+    같은 배경을 다시 쓴 사본에서 반복되는 박스는 '자리' 값이 같아진다.
+    """
     by = dict(tuple(defects.groupby("img")))
     keep = []
     for r in preds.itertuples():
@@ -118,7 +145,11 @@ def stray_spots(preds, defects, src_of):
 
 
 def build_split(split, model, high, args, data, man, out):
-    """한 split 의 판정 세트 · 시험편 예측과 구역 표시. 예측은 저장해 두고 다시 쓴다."""
+    """한 split 의 판정 세트 · 시험편 예측과 구역 표시. 예측은 저장해 두고 다시 쓴다.
+
+    반환: (js, td, ti, res). js = 판정 세트 사진 표(kind: normal / real_ng / synth_ng), td = 시험편 표(zone 열 포함),
+    ti = 시험편 사진 표, res = {"판정": 예측 표, "시험편": 예측 표} (열 img, px, py, score, zone).
+    """
     js = pd.read_csv(data / f"judge_{split}.csv")
     js["y"] = (js.kind != "normal").astype(int)
     tdir = data / ("testpiece" if split == "test" else "testpiece_val")
@@ -136,7 +167,7 @@ def build_split(split, model, high, args, data, man, out):
             mach_of = dict(zip(ids, mach))
             p["zone"] = zone_of(model, high, p, path_of, mach_of)
             p.to_csv(f, index=False, encoding="utf-8-sig")
-        p["zone"] = p["zone"].astype(bool)
+        p["zone"] = p["zone"].astype(bool)       # csv 에서 다시 읽은 경우에도 bool 로 맞춘다
         res[name] = p
     # 시험편 자리 자체가 고위험 구역인가 (배경 = 시험편이 들어간 사진, 시험편이 결을 조금 바꾸지만 박스 판정과 같은 조건)
     zf = out / f"defect_zone_{split}.csv"
@@ -154,13 +185,22 @@ def build_split(split, model, high, args, data, man, out):
 
 
 def evaluate_A(js, td, ti, res, th, t_zone, spec):
+    """구역별 기준선 t_zone 하나를 재 본다. t_zone 이 합격선과 같으면 지금 규칙 그대로다.
+
+    js · td · ti · res: build_split 의 반환값, th: 채택 기준선(합격선 · 불합격선), spec: val 검출 사양표.
+    반환: 판정 세트의 정상 합격률 · 불량 놓침 수, 시험편 검출률(전체 · 구역별 · 호기별), 시험편 사진의 헛경보 수를 담은 dict.
+    """
     t_low, t_high = th["합격선"], th["불합격선"]
+    # 사진 단위: 판정 세트를 새 규칙으로 다시 판정한다
     raw, o, i = image_scores(res["판정"], js.img.tolist())
     v = verdict(raw, o, i, t_low, t_high, t_zone)
+    # 사진 종류별 가리개: 가짜 정상 / 실제 불량 / 합성 불량
     n, r_, sn = (js.kind == "normal").to_numpy(), (js.kind == "real_ng").to_numpy(), (js.kind == "synth_ng").to_numpy()
     ins = in_spec(js, spec)
+    # 이물 단위: 시험편 근처 박스가 구역 밖이면 합격선, 구역 안이면 t_zone 이상일 때 검출로 본다
     do, di = defect_hits(res["시험편"], td)
     hit = (do >= t_low) | (di >= t_zone)
+    # 헛경보: 시험편과 무관한 박스에 같은 구역별 기준선을 적용한다
     stray = stray_spots(res["시험편"], td, dict(zip(ti.img, ti.src)))
     fp = stray[(stray.score >= t_low) | (stray.zone & (stray.score >= t_zone))]
     return {"t_zone": float(t_zone),
@@ -177,10 +217,17 @@ def evaluate_A(js, td, ti, res, th, t_zone, spec):
 
 
 def evaluate_B(js, td, ti, res, th, t_cand, spec, zone_only=True):
+    """놓침 후보 표시 기준 t_cand 하나를 재 본다. zone_only 가 False 면 구역 제한 없이 같은 점수 범위의 박스를 모두 후보로 본다.
+
+    반환: 합격한 가짜 정상 중 후보가 뜬 사진 수와 비율(괜한 표시), 놓친 시험편 중 후보로 잡힌 수와 비율(포착률),
+    시험편 사진의 무관한 후보 자리 수 등을 담은 dict.
+    """
     t_low = th["합격선"]
     pj = res["판정"]
+    # 판정은 그대로 두므로 원래 규칙(최고 점수 < 합격선)으로 합격한 사진을 먼저 가린다
     raw = pj.groupby("img").score.max().reindex(js.img, fill_value=0.0)
     passed = set(js.img[(raw < t_low).to_numpy()])
+    # 후보 박스: 점수가 t_cand 이상 합격선 미만, (구역 제한이면) 고위험 구역 안, 합격한 사진의 박스
     cand = pj[(pj.score >= t_cand) & (pj.score < t_low) & (pj.zone if zone_only else True) & pj.img.isin(passed)]
     normals = js[js.kind == "normal"]
     npass = normals[normals.img.isin(passed)]
@@ -188,10 +235,10 @@ def evaluate_B(js, td, ti, res, th, t_cand, spec, zone_only=True):
     # 놓친 시험편 자리에 후보 박스가 뜨는가 (사진 판정과 무관하게 이물 단위로)
     pt = res["시험편"]
     do, di = defect_hits(pt, td)
-    miss = np.maximum(do, di) < t_low
+    miss = np.maximum(do, di) < t_low                 # 근처 박스의 최고 점수가 합격선 아래인 시험편
     pc = pt[(pt.score >= t_cand) & (pt.score < t_low) & (pt.zone if zone_only else True)]
     co, ci = defect_hits(pc, td)
-    caught = miss & (np.maximum(co, ci) > 0)
+    caught = miss & (np.maximum(co, ci) > 0)          # 놓쳤지만 근처에 후보 박스가 하나라도 있는 시험편
     ins = in_spec(td.assign(kind="synth_ng"), spec)
     z = td.zone.to_numpy()
     stray = stray_spots(pc, td, dict(zip(ti.img, ti.src)))
@@ -207,6 +254,7 @@ def evaluate_B(js, td, ti, res, th, t_cand, spec, zone_only=True):
 
 
 def main():
+    """val 에서 t_zone 과 t_cand 를 고르고, 고른 값으로 test 를 한 번 재어 results/zone_rules 에 저장한다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--yolo", default="ratio3_e100")
     ap.add_argument("--reuse", action="store_true", help="저장된 예측 · 구역 표시를 다시 씀")
@@ -224,11 +272,14 @@ def main():
     S = {s: build_split(s, model, high, args, data, man, out) for s in ["val", "test"]}
 
     # A: val 로 고르기
+    # 후보 끝에 합격선 자체를 넣어 '지금 규칙'(base)도 같은 표에서 함께 잰다
     ca = pd.DataFrame([evaluate_A(*S["val"], th, t, spec) for t in list(T_ZONE_GRID) + [th["합격선"]]])
     ca.to_csv(out / "curve_A.csv", index=False, encoding="utf-8-sig")
     base = ca[np.isclose(ca.t_zone, th["합격선"])].iloc[0]
     ok = ca[ca.정상_합격_장 >= base.정상_합격_장 - NORMAL_DROP]
+    # 검출률이 가장 높은 것, 같으면 t_zone 이 높은(지금 규칙에 가까운) 쪽
     best = ok.sort_values(["시험편_검출률", "t_zone"], ascending=[False, False]).iloc[0]
+    # 지금 규칙보다 검출률이 높고, 고른 값이 합격선 자체가 아닐 때만 이득이 있다고 적는다
     adopt = bool(best.시험편_검출률 > base.시험편_검출률 and not np.isclose(best.t_zone, th["합격선"]))
     summary["A_구역별기준선"] = {"선택규칙": f"val 가짜 정상 합격 감소 {NORMAL_DROP}장 이내에서 val 시험편 검출률 최대",
                             "선택_t_zone": float(best.t_zone), "이득있음": adopt,
@@ -268,7 +319,7 @@ def main():
         for k in rng.choice(idx, size=min(4, len(idx)), replace=False):
             r = td.iloc[k]
             g = np.asarray(Image.open(data / "testpiece/images" / f"{r.img}.png").convert("L"))
-            g = np.pad(g, 40, mode="edge")
+            g = np.pad(g, 40, mode="edge")           # 가장자리 근처 시험편도 64px 조각을 자를 수 있게 40px 씩 덧댄다
             x, y = int(round(r.cx)) + 40, int(round(r.cy)) + 40
             c = cv2.cvtColor(cv2.resize(g[y - 32:y + 32, x - 32:x + 32], (256, 256), interpolation=cv2.INTER_CUBIC), cv2.COLOR_GRAY2RGB)
             cv2.circle(c, (128, 128), 26, (15, 118, 110), 2, cv2.LINE_AA)

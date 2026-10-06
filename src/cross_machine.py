@@ -30,21 +30,26 @@ from synth_eval import score_defects, yolo_preds
 from train_yolo import predict, weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "results" / "cross_machine"
+OUT = ROOT / "results" / "cross_machine"      # 실험별 결과 폴더와 모아 놓은 표가 들어가는 곳
 
 
 def run_name(holdout, variants):
+    """실험 이름. 예: 3호기를 빼고 합성 3배면 lomo3_ratio3. runs/ 와 results/cross_machine/ 아래 폴더 이름으로 쓴다."""
     return f"lomo{holdout}_ratio{variants}"
 
 
 def write_lists(data, man, holdout, variants):
-    """남은 두 호기의 학습·검증 목록과 데이터셋 yaml."""
+    """남은 두 호기의 학습·검증 목록과 데이터셋 yaml.
+
+    man : 라벨 있는 사진의 목록(id 가 색인), holdout : 빼놓을 호기 번호, variants : 학습 사진 한 장당 합성 증강 수.
+    data/lomo 아래에 쓰고 (yaml 경로, 학습 사진 수, 검증 사진 수) 를 돌려준다. 학습 사진 수에는 합성 증강 사진도 들어간다.
+    """
     d = data / "lomo"
     d.mkdir(parents=True, exist_ok=True)
     rest = man[man["machine"] != holdout]
-    img = lambda i: str((data / "clean/images" / f"{i}.png").resolve())
+    img = lambda i: str((data / "clean/images" / f"{i}.png").resolve())     # 목록에는 절대 경로를 적는다
     tr = [img(i) for i in rest.index[rest["split"] == "train"]]
-    for i in rest.index[rest["split"] == "train"]:
+    for i in rest.index[rest["split"] == "train"]:                           # 같은 학습 사진으로 만든 합성 증강본 __a0, __a1, ...
         tr += [str((data / "aug/images" / f"{i}__a{v}.png").resolve()) for v in range(variants)]
     va = [img(i) for i in rest.index[rest["split"] == "val"]]
     name = run_name(holdout, variants)
@@ -57,22 +62,31 @@ def write_lists(data, man, holdout, variants):
 
 
 def score_set(model, ids, data, sizes, imgsz):
+    """ids 의 정제 사진을 추론하고 정답을 읽는다. sizes = {id: (w, h)}.
+
+    반환: (예측 표: 열 id, x0, y0, x1, y1, score / 정답: {id: (N, 4) xyxy 픽셀}). 예측은 점수 0.001 이상을 모두 담는다.
+    """
     gt = M.load_gt(ids, data / "clean/labels", sizes)
     pred = predict(model, [data / "clean/images" / f"{i}.png" for i in ids], ids, imgsz)
     return pred, gt
 
 
 def evaluate(pred, gt, thr):
+    """기준선 thr 에서 두 가지 일치 기준으로 채점한다. 반환: {"center": 지표 사전, "iou50": 지표 사전} (metrics.evaluate 의 결과)."""
     return {rule: M.evaluate(pred, gt, thr, rule) for rule in ["center", "iou50"]}
 
 
 def synth_rate(name, data, holdout, thr, man):
-    """빼놓은 호기 test 사진으로 만든 합성 저대비 이물 검출률 (채점 방식은 synth_eval.py 와 같다)."""
+    """빼놓은 호기 test 사진으로 만든 합성 저대비 이물 검출률 (채점 방식은 synth_eval.py 와 같다).
+
+    name : 모델 이름, thr : 그 모델의 기준선. 반환: {이물수, 검출률, 오검출_영상당}.
+    """
     imgs = pd.read_csv(data / "synth/images.csv")
     imgs = imgs[imgs["machine"] == holdout]
     defects = pd.read_csv(data / "synth/defects.csv")
     defects = defects[defects["machine"] == holdout].reset_index(drop=True)
-    half = json.load(open(data / "synth/config.json", encoding="utf-8"))["box"] / 2
+    half = json.load(open(data / "synth/config.json", encoding="utf-8"))["box"] / 2     # 합성 이물 박스의 반폭 (px)
+    # 원본 사진의 실제 이물 박스 (YOLO 형식 비율 → xyxy 픽셀). 채점 함수에 함께 넘긴다
     real = {}
     for s in imgs["src"].unique():
         b = np.loadtxt(data / "clean/labels" / f"{s}.txt", ndmin=2)
@@ -86,6 +100,10 @@ def synth_rate(name, data, holdout, thr, man):
 
 
 def run(args):
+    """호기 하나를 빼고 학습 → 기준선 결정 → 빼놓은 호기 채점 → 전체 호기 학습 모델과 비교까지 한 번에 한다.
+
+    결과는 results/cross_machine/<이름>/metrics.json 과 pred_holdout.csv(빼놓은 호기 예측에 tp · gt_idx 열을 붙인 표).
+    """
     from ultralytics import YOLO
 
     cfg = yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))
@@ -106,20 +124,23 @@ def run(args):
             hsv_h=0.0, hsv_s=0.0, hsv_v=0.3, flipud=0.5, fliplr=0.5,          # train_yolo.py 와 같은 설정
             patience=args.epochs + 1, plots=False, verbose=False,
         )
+        # 에폭 고정 학습이므로 마지막 에폭 가중치를 final.pt 로 둔다 (weights_path 가 final.pt 를 먼저 찾는다)
         shutil.copy(run_dir / "weights" / "last.pt", run_dir / "weights" / "final.pt")
     model = YOLO(str(weights_path(name)))
 
+    # 세 가지 사진 묶음: 남은 호기의 val(기준선용), 빼놓은 호기 전부(시험), 빼놓은 호기의 test 분할(전체 호기 학습 모델과 비교용)
     rest_val = man.index[(man["machine"] != args.holdout) & (man["split"] == "val")].tolist()
     held_all = man.index[man["machine"] == args.holdout].tolist()
     held_test = man.index[(man["machine"] == args.holdout) & (man["split"] == "test")].tolist()
 
+    # 기준선은 남은 호기의 val 에서 F1 이 최대인 점수로 정한다
     pv, gv = score_set(model, rest_val, data, sizes, args.imgsz)
     n_val = sum(len(g) for g in gv.values())
     thr = M.best_f1_threshold(M.match(pv, gv)[0], n_val)
     ph, gh = score_set(model, held_all, data, sizes, args.imgsz)
     pm, _ = M.match(ph, gh)
     pm.to_csv(out / "pred_holdout.csv", index=False, encoding="utf-8-sig")
-    tp = pm[pm["tp"] == 1]
+    tp = pm[pm["tp"] == 1]                              # 실제 이물과 맞은 예측. 그 최저 점수를 결과에 적는다
 
     res = {"이름": name, "빼놓은_호기": args.holdout, "합성_배수": args.variants, "학습_사진수": n_tr, "검증_사진수": n_va,
            "기준선(남은 호기 val F1최대)": thr,
@@ -144,6 +165,7 @@ def run(args):
 
 
 def summary():
+    """실험별 metrics.json 을 모아 한 줄씩 표로 만든다 (summary.csv, summary.json). 수치는 중심 일치 기준이고 F1 만 IoU 0.5 기준도 싣는다."""
     rows = []
     for f in sorted(OUT.glob("lomo*/metrics.json")):
         r = json.load(open(f, encoding="utf-8"))
@@ -168,6 +190,7 @@ def summary():
 
 
 def main():
+    """--summary 면 표만 모으고, 아니면 --holdout 호기를 뺀 실험 하나를 돌린다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--holdout", type=int, choices=[1, 2, 3])
     ap.add_argument("--variants", type=int, default=3, help="학습 사진 한 장당 합성 증강 수 (0 = 합성 없이)")

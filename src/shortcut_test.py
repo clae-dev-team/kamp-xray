@@ -27,17 +27,25 @@ COLORS = [((255, 0, 0), .72), ((255, 255, 0), .12), ((0, 0, 255), .12), ((255, 0
 
 
 def draw_bait(gray, rects, rng):
+    """회색 정제본에 색 네모(선 두께 2px)를 그려 미끼 영상을 만든다.
+
+    gray: (세로, 가로) uint8, rects: (N,4) 네모 좌표 x0, y0, x1, y1 (픽셀), rng: 색을 고르는 난수 발생기.
+    반환: (세로, 가로, 3) RGB 영상. 네모마다 COLORS 의 빈도대로 색을 하나 뽑는다.
+    """
     rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
     cols, prob = zip(*COLORS)
     for x0, y0, x1, y1 in rects:
         c = cols[rng.choice(len(cols), p=np.array(prob) / sum(prob))]
+        # 오른쪽 · 아래 끝은 1 을 빼서 그린다
         cv2.rectangle(rgb, (int(x0), int(y0)), (int(x1) - 1, int(y1) - 1), c, 2)
     return rgb
 
 
 def predict(model, imgs_rgb, ids, imgsz=640):
+    """RGB 영상 배열들을 한 장씩 YOLO 로 예측한다. 반환: 열 id, x0, y0, x1, y1, score 인 표 (좌표는 픽셀)."""
     rows = []
     for i, im in zip(ids, imgs_rgb):
+        # 배열을 넣을 때는 BGR 순서로 바꿔 준다. conf 를 0.001 로 낮춰 받고 임계값은 채점할 때 적용한다
         r = model.predict(cv2.cvtColor(im, cv2.COLOR_RGB2BGR), imgsz=imgsz, conf=0.001,
                           max_det=100, verbose=False)[0]
         for (x0, y0, x1, y1), s in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.conf.cpu().numpy()):
@@ -46,12 +54,17 @@ def predict(model, imgs_rgb, ids, imgsz=640):
 
 
 def bait_hits(pred, bait, thr):
-    """판정 임계값 이상 예측 중 중심이 미끼 네모 안에 떨어진 것 = 표시만 보고 '이물'이라 한 경우."""
+    """판정 임계값 이상 예측 중 중심이 미끼 네모 안에 떨어진 것 = 표시만 보고 '이물'이라 한 경우.
+
+    pred: predict 의 예측 표, bait: 미끼 네모 표(열 id, x0, y0, x1, y1), thr: 판정 임계값.
+    반환: (반응한 미끼 수, 미끼별 최고 점수의 중앙값, 최댓값). 미끼 안에 예측이 없으면 그 미끼의 점수는 0.
+    """
     hit = 0
     top = []
     for r in bait.itertuples():
         q = pred[pred["id"] == r.id]
         cx, cy = (q.x0 + q.x1) / 2, (q.y0 + q.y1) / 2
+        # 네모에서 2px 까지 벗어난 중심도 안으로 친다
         s = q[(cx >= r.x0 - 2) & (cx <= r.x1 + 2) & (cy >= r.y0 - 2) & (cy <= r.y1 + 2)]["score"]
         m = float(s.max()) if len(s) else 0.0
         top.append(m)
@@ -60,6 +73,7 @@ def bait_hits(pred, bait, thr):
 
 
 def main():
+    """두 모델을 원본 · 정제본 · 미끼 세 입력에 돌려 성능과 미끼 반응을 표로 저장하고 예시 그림을 만든다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--clean", default="y26s_640")
@@ -78,6 +92,7 @@ def main():
     man = man[man["labeled"] & (man["split"] == args.split)].set_index("id")
     ids = man.index.tolist()
     gt = M.load_gt(ids, data / "clean" / "labels", {i: (r.w, r.h) for i, r in man.iterrows()})
+    # marks.csv 에서 kind 가 fake 인 줄 = 이물 없는 자리에 놓은 가짜 사각형. 이 자리를 미끼 네모 위치로 쓴다
     bait = pd.read_csv(data / "marks.csv")
     bait = bait[(bait["kind"] == "fake") & bait["id"].isin(ids)]
 
@@ -96,6 +111,7 @@ def main():
         thr = json.load(open(ROOT / "results" / f"yolo_{name}" / "metrics.json", encoding="utf-8"))["thresholds"]["F1최대"]
         for cond, imgs in inputs.items():
             p = predict(model, imgs, ids)
+            # 정답은 세 입력 모두 정제본 라벨의 실제 이물. 예측 중심이 정답 박스 안이면 맞은 것으로 채점한다
             r = M.evaluate(p, gt, thr, "center")
             row = {k: r[k] for k in ["AP", "TP", "FP", "FN", "precision", "recall", "F1"]}
             row["thr"] = round(thr, 3)
@@ -103,7 +119,7 @@ def main():
                 h, med, mx = bait_hits(p, bait, thr)
                 row.update(미끼수=len(bait), 미끼반응=h, 미끼반응률=round(h / len(bait), 3),
                            미끼점수_중앙=round(med, 3), 미끼점수_최대=round(mx, 3))
-                examples[tag] = p
+                examples[tag] = p        # 예시 그림에 쓸 미끼 영상 예측을 남겨 둔다
             res[f"{tag}/{cond}"] = row
             print(tag, cond, row)
 
@@ -126,6 +142,7 @@ def main():
             row.append(v)
         pair = np.hstack([row[0], np.full((row[0].shape[0], 6, 3), 255, np.uint8), row[1]])
         tiles.append(cv2.resize(pair, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST))
+    # 너비가 다른 줄은 오른쪽을 흰색으로 채워 맞추고, 줄 아래에 8px 여백을 둔다
     w = max(t.shape[1] for t in tiles)
     tiles = [np.pad(t, ((0, 8), (0, w - t.shape[1]), (0, 0)), constant_values=255) for t in tiles]
     Image.fromarray(np.vstack(tiles)).save(out / "bait_examples.png")

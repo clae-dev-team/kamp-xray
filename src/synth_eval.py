@@ -26,10 +26,16 @@ import cnn as C
 from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
-MARGIN = 2
+MARGIN = 2           # 예측 중심이 이물 박스에서 벗어나도 봐주는 여유 (px)
 
 
 def yolo_preds(name, paths, ids, imgsz=640, batch=32, machines=None):
+    """모델 name 으로 영상들을 예측해 박스 중심과 점수를 모은다. 이름은 yolo 지만 CNN 이면 CNN 으로 돌린다.
+
+    paths: 영상 경로 목록, ids: 같은 순서의 영상 이름, machines: 호기 번호(CNN 만 씀, 호기별 박스 크기).
+    반환: 열 img, px, py, score 인 표. px, py 는 박스 중심(픽셀), score 는 신뢰도.
+    """
+    # runs/<name>/cnn.pt 가 있으면 조각 분류 CNN, 없으면 YOLO 가중치로 본다
     if C.is_cnn(name):
         d = C.predict_paths(name, paths, ids, machines)
         return pd.DataFrame({"img": d["id"], "px": (d.x0 + d.x1) / 2, "py": (d.y0 + d.y1) / 2, "score": d["score"]})
@@ -37,6 +43,7 @@ def yolo_preds(name, paths, ids, imgsz=640, batch=32, machines=None):
     model = YOLO(str(weights_path(name)))
     rows = []
     for k in tqdm(range(0, len(paths), batch), desc=f"YOLO {name}"):
+        # conf 를 0.001 로 낮춰 낮은 점수 예측까지 받는다. 판정 임계값은 채점할 때 따로 적용한다
         res = model.predict([str(p) for p in paths[k:k + batch]], imgsz=imgsz, conf=0.001,
                             max_det=100, verbose=False)
         for i, r in zip(ids[k:k + batch], res):
@@ -46,6 +53,12 @@ def yolo_preds(name, paths, ids, imgsz=640, batch=32, machines=None):
 
 
 def baseline_preds(prm, paths, ids, machines):
+    """규칙 기반(black top-hat) 베이스라인으로 영상들을 예측한다.
+
+    prm: baseline_clean/metrics.json 의 params (구조요소 se, 평활 sigma, 점수 방식 score, 호기별 박스 크기).
+    반환: yolo_preds 와 같은 열 img, px, py, score.
+    """
+    # json 은 키가 문자열이라 호기 번호를 정수로 되돌린다
     boxes = {int(k): v for k, v in prm["box_by_machine"].items()}
     rows = []
     for p, i, m in tqdm(list(zip(paths, ids, machines)), desc="베이스라인"):
@@ -56,21 +69,29 @@ def baseline_preds(prm, paths, ids, machines):
 
 
 def score_defects(pred, defects, real_boxes, thr, half):
-    """이물별 최고 점수·검출 여부, 영상별 오검출 수."""
+    """이물별 최고 점수·검출 여부, 영상별 오검출 수.
+
+    pred: 열 img, px, py, score. defects: 합성 이물 표(열 img, src, cx, cy). real_boxes: {원본 영상 이름: (N,4) xyxy 픽셀}.
+    thr: 판정 임계값, half: 이물 박스 반폭(px).
+    반환: (best, fp). best 는 defects 행 순서의 근처 예측 최고 점수(없으면 0), fp 는 {영상 이름: 오검출 수}.
+    """
     best = np.zeros(len(defects))
     fp = {}
     by_img = dict(tuple(pred.groupby("img")))
     for img, grp in defects.groupby("img"):
         q = by_img.get(img)
         if q is None:
+            # 예측이 하나도 없는 영상: 이물 점수는 0 으로 남고 오검출도 0
             fp[img] = 0
             continue
-        used = np.zeros(len(q), bool)
+        used = np.zeros(len(q), bool)   # 합성 이물이나 실제 이물에 닿은 예측 표시
         for idx, r in grp.iterrows():
+            # 이물 중심에서 가로·세로 모두 half + MARGIN 안에 중심이 든 예측. 일대일 배정은 하지 않는다
             near = (np.abs(q["px"] - r.cx) <= half + MARGIN) & (np.abs(q["py"] - r.cy) <= half + MARGIN)
             if near.any():
                 best[defects.index.get_loc(idx)] = q.loc[near, "score"].max()
                 used |= near.to_numpy()
+        # 원본 영상에 있던 실제 이물에 맞은 예측도 오검출에서 뺀다 (한 영상의 합성 이물은 모두 같은 원본에서 나옴)
         for x0, y0, x1, y1 in real_boxes[grp["src"].iloc[0]]:
             used |= ((q["px"] >= x0 - MARGIN) & (q["px"] <= x1 + MARGIN) &
                      (q["py"] >= y0 - MARGIN) & (q["py"] <= y1 + MARGIN)).to_numpy()
@@ -79,6 +100,8 @@ def score_defects(pred, defects, real_boxes, thr, half):
 
 
 def heatmap(ax, tab, title):
+    """검출률 표(행 = 명목 대비 c0, 열 = 지름 px, 값 0~1)를 칸마다 % 숫자를 적은 히트맵으로 그린다. 반환: imshow 객체."""
+    # origin="lower": 옅은 대비가 아래, 진한 대비가 위로 가게 한다
     im = ax.imshow(tab.to_numpy(), cmap="Blues", vmin=0, vmax=1, aspect="auto", origin="lower")
     ax.set_xticks(range(tab.shape[1]), [f"{c:g}" for c in tab.columns])
     ax.set_yticks(range(tab.shape[0]), [f"{c:g}" for c in tab.index])
@@ -90,6 +113,7 @@ def heatmap(ax, tab, title):
 
 
 def main():
+    """합성 평가셋을 베이스라인과 지정 모델로 예측해 대비·크기별 검출률 표와 그림을 저장한다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--yolo", default="y26s_640")
@@ -104,11 +128,12 @@ def main():
         out = out.with_name(out.name + f"__{args.set}")
     out.mkdir(parents=True, exist_ok=True)
     scfg = json.load(open(syn / "config.json", encoding="utf-8"))
-    half = scfg["box"] / 2
+    half = scfg["box"] / 2      # 합성할 때 쓴 채점용 박스 한 변의 절반 (px)
 
     imgs = pd.read_csv(syn / "images.csv")
     defects = pd.read_csv(syn / "defects.csv")
     man = pd.read_csv(data / "manifest.csv").set_index("id")
+    # 원본 영상의 실제 이물 박스: YOLO 라벨(class cx cy w h, 0~1 비율)을 픽셀 xyxy 로 바꾼다
     real_boxes = {}
     for s in imgs["src"].unique():
         b = np.loadtxt(data / "clean/labels" / f"{s}.txt", ndmin=2)
@@ -120,6 +145,7 @@ def main():
     bl = json.load(open(ROOT / "results/baseline_clean/metrics.json", encoding="utf-8"))
     yo = json.load(open(C.metrics_file(args.yolo), encoding="utf-8"))
     lab = "CNN" if C.is_cnn(args.yolo) else "YOLO"
+    # 모델 이름 → (예측 표, 판정 임계값). 임계값은 각 모델이 val 에서 정한 F1 최대 값이다
     models = {
         "베이스라인": (baseline_preds(bl["params"], paths, imgs["img"].tolist(), imgs["machine"].tolist()),
                     bl["thresholds"]["F1최대"]),
@@ -137,6 +163,7 @@ def main():
                          "오검출_합계": int(sum(fp.values()))}
     defects.to_csv(out / "defects_scored.csv", index=False, encoding="utf-8-sig")
 
+    # 조건별 검출률 표: 행 = 명목 대비 c0, 열 = 지름 d, 값 = 그 칸 이물의 검출 비율
     tabs = {n: defects.pivot_table(index="c0", columns="d", values=f"{n}_hit", aggfunc="mean") for n in models}
     for n, t in tabs.items():
         t.round(3).to_csv(out / f"rate_{n}.csv", encoding="utf-8-sig")
@@ -149,11 +176,13 @@ def main():
     curve.round(3).to_csv(out / "rate_by_measured_contrast.csv", encoding="utf-8-sig")
     for n in models:
         summary[n]["구간별_검출률"] = {str(k): round(float(v), 3) for k, v in curve[f"{n}_hit"].items()}
+    # 실제 이물의 측정 대비 분포(5 · 50 · 95 백분위)를 함께 적어 합성 대비 구간과 견준다
     real = pd.read_csv(ROOT / "results/defect_stats/real_defects.csv")
     summary["실제이물_측정대비"] = {k: round(float(real["contrast"].quantile(q)), 3)
                             for k, q in [("p05", .05), ("p50", .5), ("p95", .95)]}
     json.dump(summary, open(out / "summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
+    # 그림 1: 모델별 검출률 히트맵 (왼쪽 베이스라인, 오른쪽 지정 모델)
     plt.rcParams["font.family"] = "Malgun Gothic"
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.6), dpi=150)
     for ax, (n, t) in zip(axes, tabs.items()):
@@ -161,6 +190,7 @@ def main():
     fig.colorbar(im, ax=axes, shrink=0.8)
     fig.savefig(out / "heatmap.png", bbox_inches="tight")
 
+    # 그림 2: 측정 대비 구간별 검출률 곡선. 가로 위치는 구간의 가운데 값, 노란 띠는 실제 이물 대비의 5~95% 범위
     fig, ax = plt.subplots(figsize=(6.4, 4.2), dpi=150)
     mid = [(b.left + b.right) / 2 for b in curve.index]
     ax.axvspan(real["contrast"].quantile(.05), real["contrast"].quantile(.95), color="#f2c14e", alpha=.25,

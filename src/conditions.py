@@ -17,7 +17,7 @@
 3. 실제 이물 139개 중 점수가 낮은 것들의 조건.
 
 실행: .venv\\Scripts\\python.exe src\\conditions.py   (froc.py 먼저)
-결과: results/conditions/ (summary.json, miss_*.csv, fp_*.csv, fp_top.png, miss_insepc.png)
+결과: results/conditions/ (summary.json, miss_testpiece.csv, miss_inspec.csv, miss_tree.txt, real_scores.csv, fp.csv, fp_top.csv, fp_top.png)
 """
 import argparse
 import json
@@ -39,47 +39,67 @@ from synth_eval import MARGIN
 from testpiece import HALF
 
 ROOT = Path(__file__).resolve().parents[1]
-FP_WIDE = 0.3
+FP_WIDE = 0.3        # 헛경보 후보로 넓혀 보는 점수 하한 (합격선보다 낮음)
 ERASE_NEAR = 6       # 지운 자리 근처 (px)
 EDGE_NEAR = 4        # 제품 가장자리 근처 (px)
 RNG_PTS = 200        # 사진마다 무작위 비교 지점
 
 
 class Img:
-    """사진 한 장의 제품 마스크 · 가장자리 거리 · 띠 · 결 지도 (캐시)."""
-    cache = {}
+    """사진 한 장의 제품 마스크 · 가장자리 거리 · 띠 · 결 지도 (캐시).
+
+    miss_risk.py 와 zone_rules.py 도 이 지도를 그대로 가져다 쓴다.
+    """
+    cache = {}       # 경로 → 지도 dict. 같은 사진을 여러 번 읽지 않게 한다
 
     @staticmethod
     def from_array(g):
+        """회색 영상 g(uint8, 세로×가로) 에서 화소별 지도를 만든다. 모든 지도는 g 와 같은 크기.
+
+        반환 dict: g(원본), pm(15×15 침식한 제품 영역 0/1), dist(제품 경계까지 거리 px), band(어두운 띠 여부),
+        tex(주변 결: 고역 성분의 15×15 제곱평균제곱근), bg(주변 밝기: 15×15 평균).
+        """
+        # 침식하지 않은 제품 영역(Otsu, 배경보다 어두운 쪽이 1). 거리 변환의 기준이라 pm 과 따로 구한다
         full = cv2.threshold(cv2.GaussianBlur(g, (9, 9), 0), 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
         pm = product_mask(g)
         f = g.astype(np.float32)
-        hp = f - cv2.GaussianBlur(f, (0, 0), 3)
-        tex = np.sqrt(cv2.blur(hp * hp, (15, 15)))
+        hp = f - cv2.GaussianBlur(f, (0, 0), 3)             # 고역 성분: 원본 - 가우시안(σ=3) 흐림
+        tex = np.sqrt(cv2.blur(hp * hp, (15, 15)))          # 15×15 창 안 고역 성분의 제곱평균제곱근 = 그 자리의 거친 정도
         bg = cv2.blur(f, (15, 15))
         return dict(g=g, pm=pm, dist=cv2.distanceTransform(full, cv2.DIST_L2, 3), band=band_mask(g, pm), tex=tex, bg=bg)
 
     @classmethod
     def get(cls, path):
+        """경로의 사진을 회색으로 읽어 지도를 만들고 캐시에 둔다. 두 번째부터는 캐시를 돌려준다."""
         if path not in cls.cache:
             cls.cache[path] = cls.from_array(np.asarray(Image.open(path).convert("L")))
         return cls.cache[path]
 
 
 def feats(I, x, y):
+    """지도 I 에서 (x, y) 자리(픽셀)의 조건을 읽는다. 영상 밖 좌표는 가장 가까운 화소로 당긴다.
+
+    반환 dict: edge_dist(가장자리 거리 px), in_band(띠 안), in_product(제품 안), bg(주변 밝기), texture(주변 결).
+    """
     h, w = I["g"].shape
+    # 지도는 [행 = y, 열 = x] 순서로 읽는다
     xi, yi = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
     return dict(edge_dist=float(I["dist"][yi, xi]), in_band=bool(I["band"][yi, xi]), in_product=bool(I["pm"][yi, xi]),
                 bg=float(I["bg"][yi, xi]), texture=float(I["tex"][yi, xi]))
 
 
 def rate_table(df, col, bins=None, labels=None):
+    """col 값별(bins 를 주면 구간별) 놓침률과 개수. df 에는 miss 열(0/1)이 있어야 한다.
+
+    반환: {값 또는 구간 이름: {"놓침률": 0~1, "수": 개수}}.
+    """
     k = pd.cut(df[col], bins, labels=labels, include_lowest=True) if bins is not None else df[col]
     t = df.groupby(k, observed=True)["miss"].agg(["mean", "size"])
     return {str(i): {"놓침률": round(float(r["mean"]), 3), "수": int(r["size"])} for i, r in t.iterrows()}
 
 
 def main():
+    """놓침 조건(시험편) · 헛경보 조건 · 점수 낮은 실제 이물의 세 가지 분석을 차례로 돌려 results/conditions 에 저장한다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--yolo", default="ratio3_e100")
     args = ap.parse_args()
@@ -92,14 +112,18 @@ def main():
 
     # ---------- 1. 놓침 조건 (시험편) ----------
     d = pd.read_csv(ROOT / "results/testpiece/defects_scored.csv")
+    # 주변 밝기와 결은 시험편을 넣기 전의 배경(가짜 정상 원본)에서 읽는다
     for i, r in enumerate(d.itertuples()):
         f = feats(Img.get(data / "normal/test" / f"{r.src}.png"), r.cx, r.cy)
         d.loc[i, ["bg", "texture"]] = f["bg"], f["texture"]
+    # 놓침 = 그 시험편 근처 예측의 최고 점수가 판정 합격선 아래
     d["miss"] = (d["YOLO_score"] < thr).astype(int)
+    # 사양 안 여부는 val 로 정한 사양표(testpiece.py --split val 의 결과)로 가린다
     spec = pd.read_csv(ROOT / f"results/testpiece_val_{args.yolo}/spec.csv")
     spec = spec[spec["model"] == "YOLO"]
     d["사양내"] = in_spec(d.assign(kind="synth_ng"), spec)
     d.to_csv(out / "miss_testpiece.csv", index=False, encoding="utf-8-sig")
+    # (a) 조건별 놓침률 표. 주변 결과 밝기는 시험편 전체의 3분위로 세 등급으로 나눈다
     tex_q = np.quantile(d["texture"], [0, 1 / 3, 2 / 3, 1])
     bg_q = np.quantile(d["bg"], [0, 1 / 3, 2 / 3, 1])
     mt = {"전체": {"놓침률": round(float(d.miss.mean()), 3), "수": len(d)},
@@ -115,15 +139,20 @@ def main():
                              "띠": rate_table(mid.assign(띠=np.where(mid.in_band, "띠 안", "띠 밖")), "띠"),
                              "주변결": rate_table(mid, "texture", tex_q, ["매끈", "중간", "거침"]),
                              "호기": rate_table(mid, "machine")}
+    # (b) 표준화 로지스틱 회귀. 가장자리 거리는 log(1 + 거리) 로 넣고, 호기는 1호기를 기준으로 2 · 3호기 여부를 넣는다
     X = pd.DataFrame({"측정대비": d.c_meas, "지름": d.d, "가장자리거리(log)": np.log1p(d.edge_dist),
                       "띠안": d.in_band.astype(float), "주변밝기": d.bg, "주변결": d.texture,
                       "2호기": (d.machine == 2).astype(float), "3호기": (d.machine == 3).astype(float)})
+    # 특징마다 평균 0 · 표준편차 1 로 맞춰, 계수 크기를 특징끼리 견줄 수 있게 한다
     Z = (X - X.mean()) / X.std()
     lr = LogisticRegression(C=10, max_iter=2000).fit(Z, d.miss)
+    # exp(계수) = 그 특징이 1 표준편차 늘 때 놓침 오즈가 몇 배가 되는가 (다른 특징은 같다고 볼 때)
     mt["로지스틱_오즈비(1표준편차당, >1이면 놓침 증가)"] = {c: round(float(np.exp(b)), 3) for c, b in zip(Z.columns, lr.coef_[0])}
+    # (c) 결정나무는 표준화하지 않은 X 로 맞춰, 규칙의 경계값을 원래 단위로 읽을 수 있게 한다. 잎마다 시험편 200개 이상
     tree = DecisionTreeClassifier(max_depth=3, min_samples_leaf=200, random_state=0).fit(X, d.miss)
     rules = export_text(tree, feature_names=list(X.columns), show_weights=True, decimals=3)
     (out / "miss_tree.txt").write_text(rules, encoding="utf-8")
+    # 사양 안인데 놓친 시험편을 따로 모아, 사양 안 전체와 조건(가장자리 · 띠 · 결)의 비율을 나란히 적는다
     ins = d[d["사양내"]]
     mi = ins[ins.miss == 1]
     mt["사양안"] = {"수": len(ins), "놓침": len(mi), "놓침률": round(float(mi.shape[0] / max(len(ins), 1)), 4),
@@ -145,9 +174,11 @@ def main():
     rows = []
     # (a) 실제 사진 + 가짜 정상
     pr = pd.read_csv(fr / f"preds_실제_{args.yolo}.csv")
+    # froc.match_real 과 같은 배정: 중심점을 넓이 0 인 박스로 넘겨 정답 박스(±2px) 안이면 맞은 것으로 본다
     q = pd.DataFrame({"id": pr["img"], "x0": pr.px, "y0": pr.py, "x1": pr.px, "y1": pr.py, "score": pr.score})
     pm, _ = M.match(q, gt, "center")
     for r in pm[(pm.tp == 0) & (pm.score >= FP_WIDE)].itertuples():
+        # froc.py 가 가짜 정상 사진 이름에 __normal 을 붙여 저장했다. 원본 이름(src)과 읽을 폴더를 가린다
         normal = r.id.endswith("__normal")
         src = r.id.replace("__normal", "")
         rows.append(dict(set="가짜 정상" if normal else "실제 불량 사진", img=r.id, src=src, x=r.x0, y=r.y0, score=r.score,
@@ -167,21 +198,25 @@ def main():
     fp = pd.DataFrame(rows)
     rnd = []
     rng = np.random.default_rng(0)
+    # 헛경보 후보마다 그 자리의 조건을 붙인다
     for i, r in fp.iterrows():
         I = Img.get(r.path)
         f = feats(I, r.x, r.y)
+        # 지운 자리까지 거리 = 원본 사진의 실제 이물 박스 중심 중 가장 가까운 것까지 (px). 정답이 없으면 무한대
         e = gt[r.src] if r.src in gt else np.zeros((0, 4))
         dist_e = float(np.min(np.hypot((e[:, 0] + e[:, 2]) / 2 - r.x, (e[:, 1] + e[:, 3]) / 2 - r.y))) if len(e) else np.inf
         c = measure(I["g"], r.x, r.y)
         fp.loc[i, list(f) + ["지운자리거리", "측정대비"]] = list(f.values()) + [dist_e, c["contrast"]]
         fp.loc[i, "machine"] = int(man.machine[r.src])
     fp["판정헛경보"] = fp.score >= thr
+    # 고유 자리: 원본 사진 이름 + 좌표를 6px 격자로 반올림한 칸. 같은 배경을 다시 쓴 사본에서 반복된 헛경보를 하나로 묶는다
+    # uniq 는 자리마다 점수가 가장 높은 한 건만 남긴 표 (점수 내림차순)
     fp["자리"] = fp.src + "@" + (fp.x / 6).round().astype(int).astype(str) + "," + (fp.y / 6).round().astype(int).astype(str)
     uniq = fp.sort_values("score", ascending=False).drop_duplicates("자리")
     # 같은 사진들의 무작위 제품 안 지점 (비교 기준)
     for path in fp.path.unique():
         I = Img.get(path)
-        src = Path(path).stem.split("__")[0]
+        src = Path(path).stem.split("__")[0]      # 시험편 사진 이름 <원본>__t0000 에서 원본 이름만
         ys, xs = np.nonzero(I["pm"])
         e = gt.get(src, np.zeros((0, 4)))
         for j in rng.integers(len(xs), size=RNG_PTS):
@@ -191,6 +226,7 @@ def main():
     rnd = pd.DataFrame(rnd)
 
     def describe(df):
+        """자리 표 한 묶음의 요약: 개수와, 지운 자리 근처 · 가장자리 근처 · 제품 밖 · 띠 안의 비율(0~1), 주변 결 중앙값."""
         return {"수": len(df),
                 "지운자리_6px안": round(float((df.지운자리거리 <= ERASE_NEAR).mean()), 3),
                 "가장자리_4px안": round(float((df.edge_dist < EDGE_NEAR).mean()), 3),
@@ -203,6 +239,8 @@ def main():
           "판정헛경보_사진종류별": fp[fp.판정헛경보].groupby("set").size().to_dict(),
           "판정헛경보_사진수": {"가짜 정상": 73, "실제 불량 사진": 73, "시험편 사진": 3600},
           "판정헛경보_호기별": fp[fp.판정헛경보].groupby("machine").size().astype(int).to_dict()}
+    # 고유 자리의 판정 헛경보를 원인별로 나눈다. np.select 는 앞 조건부터 맞는 것을 고르므로
+    # 지운 자리 → 제품 가장자리 → 어두운 점 순으로 우선한다
     fx = uniq[uniq.판정헛경보]
     cat = np.select([fx.지운자리거리 <= ERASE_NEAR, fx.edge_dist < EDGE_NEAR, fx.측정대비 >= 0.10],
                     ["지운 자리", "제품 가장자리", "어두운 점(대비 0.10 이상)"], "기타")
@@ -222,10 +260,12 @@ def main():
     tiles = []
     top = uniq.head(24)            # 고유 자리, 합격선 미만 후보 포함 점수 높은 순
     for r in top.itertuples():
+        # 24px 씩 덧대면 [y, y+48) 구간이 원래 좌표의 y±24 가 된다
         g = np.pad(Img.get(r.path)["g"], 24, mode="edge")
         c = g[int(r.y):int(r.y) + 48, int(r.x):int(r.x) + 48]
         tiles.append(cv2.resize(c, (144, 144), interpolation=cv2.INTER_NEAREST))
     if tiles:
+        # 한 줄에 6칸. 모자란 칸은 흰 칸으로 채우고, 칸과 줄 사이에 6px 흰 띠를 넣는다
         while len(tiles) % 6:
             tiles.append(np.full((144, 144), 255, np.uint8))
         rowsimg = [np.hstack(sum([[t, np.full((144, 6), 255, np.uint8)] for t in tiles[k:k + 6]], [])[:-1])
@@ -236,6 +276,7 @@ def main():
             .to_csv(out / "fp_top.csv", index=False, encoding="utf-8-sig")
 
     # ---------- 3. 실제 이물 중 점수 낮은 것 ----------
+    # 위 (a) 의 배정 결과에서 맞은 예측만 골라, (사진, 정답 번호)별 점수를 모은다. 맞은 예측이 없는 이물은 0 점
     q2 = pm[pm.tp == 1]
     best = {}
     for r in q2.itertuples():

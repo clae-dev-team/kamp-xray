@@ -30,21 +30,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def draw(gray, rects, rng, mode):
-    """mode: color / luma / dark / bright. 선 두께 2px, 같은 rng 순서로 색을 골라 ①②가 같은 선 배치를 갖게 한다."""
+    """mode: color / luma / dark / bright. 선 두께 2px, 같은 rng 순서로 색을 골라 ①②가 같은 선 배치를 갖게 한다.
+
+    gray: (세로, 가로) uint8 정제본, rects: (N,4) 네모 좌표 x0, y0, x1, y1 (픽셀).
+    반환: (세로, 가로, 3) RGB 영상. 회색 방식은 세 채널에 같은 값을 넣는다.
+    """
     cols, prob = zip(*COLORS)
     pr = np.array(prob) / sum(prob)
     f = gray.astype(np.float32)
     rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
     for x0, y0, x1, y1 in rects:
+        # 색을 쓰지 않는 방식에서도 색을 뽑는다. 난수를 같은 횟수만큼 써야 방식끼리 순서가 어긋나지 않는다
         c = cols[rng.choice(len(cols), p=pr)]
+        # 선이 지나는 화소만 골라내는 마스크 (shortcut_test.draw_bait 와 같은 좌표 · 두께)
         m = np.zeros(gray.shape, np.uint8)
         cv2.rectangle(m, (int(x0), int(y0)), (int(x1) - 1, int(y1) - 1), 1, 2)
         m = m.astype(bool)
         if mode == "color":
             rgb[m] = c
         elif mode == "luma":
+            # 색의 밝기(Y)와 같은 회색 하나로 선 전체를 칠한다. 바탕 밝기와는 무관한 값이다
             rgb[m] = round(0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2])
         elif mode == "dark":
+            # 선 자리의 원래 밝기에 배율을 곱한다. [:, None] 으로 (화소 수, 1) 을 만들어 세 채널에 같은 값을 넣는다
             rgb[m] = np.clip(f[m] * 0.6, 0, 255).round().astype(np.uint8)[:, None]
         elif mode == "bright":
             rgb[m] = np.clip(f[m] * 1.3, 0, 255).round().astype(np.uint8)[:, None]
@@ -52,6 +60,7 @@ def draw(gray, rects, rng, mode):
 
 
 def main():
+    """네 가지 미끼 영상을 만들어 모델마다 미끼 반응률과 실제 이물 재현율을 재고, 표와 예시 그림을 저장한다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--models", nargs="+", default=["ratio3_e100", "y26s_640"])
@@ -83,6 +92,7 @@ def main():
         for tag, imgs in inputs.items():
             p = predict(model, imgs, ids)
             h, med, mx = bait_hits(p, bait, thr)
+            # 미끼를 그린 영상에서 실제 이물을 여전히 찾는지: 정제본 라벨로 재현율과 헛경보 수를 잰다
             ev = M.evaluate(p, gt, thr, "center")
             rows.append(dict(model=name, 미끼=tag, 미끼수=len(bait), 미끼반응=h, 미끼반응률=round(h / len(bait), 3),
                              미끼점수_중앙=round(med, 3), 미끼점수_최대=round(mx, 3),
@@ -99,6 +109,7 @@ def main():
     tiles = []
     for tag in modes:
         im = inputs[tag][ids.index(i)]
+        # 24px 씩 덧대면 [cy, cy+48) 구간이 미끼 중심 ±24px 이 된다. 48px 조각을 4배(192px)로 키운다
         pad = np.pad(im, ((24, 24), (24, 24), (0, 0)), mode="edge")
         c = pad[cy:cy + 48, cx:cx + 48]
         tiles += [cv2.resize(c, (192, 192), interpolation=cv2.INTER_NEAREST), np.full((192, 8, 3), 255, np.uint8)]

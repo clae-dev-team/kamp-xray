@@ -33,49 +33,61 @@ from shortcut_test import draw_bait
 from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
-IMGSZ = 640
-LAYER = 16
-PAD = 3
+IMGSZ = 640          # 모델 입력 한 변 (px). 영상을 이 크기의 정사각형에 맞춰 넣는다
+LAYER = 16           # CAM 을 뽑는 층 번호 (model.model[16], P3)
+PAD = 3              # 이물 박스 · 미끼 네모 둘레로 넓혀 세는 여유 (px)
 
 
 class GradCAM:
+    """YOLO 모델 한 개의 대상 층 활성과 기울기를 잡아 CAM 을 만든다. kind: hires(HiResCAM) 또는 gradcam."""
+
     def __init__(self, name, device, kind="hires"):
+        """name: runs/ 아래 모델 이름, device: cuda 또는 cpu, kind: CAM 계산 방식."""
         from ultralytics import YOLO
         self.kind = kind
         self.m = YOLO(str(weights_path(name))).model.float().eval().to(device)
+        # 가중치의 기울기는 필요 없다. 입력에서 대상 층 활성까지의 기울기만 쓴다
         for p in self.m.parameters():
             p.requires_grad_(False)
         self.device = device
-        self.st = {}
+        self.st = {}         # "a" = 대상 층 활성, "g" = 그 활성에 대한 기울기
 
         def hook(_, __, o):
+            """순전파 때 대상 층 출력을 저장하고, 역전파 때 그 출력의 기울기를 받도록 걸어 둔다."""
             self.st["a"] = o
             o.register_hook(lambda g: self.st.__setitem__("g", g))
         self.m.model[LAYER].register_forward_hook(hook)
 
     def __call__(self, rgb):
-        """rgb (h, w, 3) uint8 → CAM (h, w) 0 이상, 최고 신뢰도."""
+        """rgb (h, w, 3) uint8 → CAM (h, w) 0 이상, 최고 신뢰도.
+
+        반환은 (CAM, 최고 신뢰도) 두 값이다. CAM 은 입력 영상과 같은 크기로 되돌린 것이고 정규화하지 않은 값이다.
+        """
         h, w = rgb.shape[:2]
+        # 긴 변을 IMGSZ 에 맞춰 줄이고, 남는 자리는 회색(114)으로 채워 가운데에 놓는다
         r = IMGSZ / max(h, w)
         nh, nw = round(h * r), round(w * r)
         top, left = (IMGSZ - nh) // 2, (IMGSZ - nw) // 2
         canvas = np.full((IMGSZ, IMGSZ, 3), 114, np.uint8)
         canvas[top:top + nh, left:left + nw] = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        # (세로, 가로, 채널) → (1, 채널, 세로, 가로), 0~1 로 바꾼다. 입력에 기울기를 켜야 대상 층까지 역전파가 이어진다
         x = torch.from_numpy(canvas).permute(2, 0, 1)[None].float().div(255).to(self.device).requires_grad_(True)
         out = self.m(x)
-        s = out[0][:, 4].max()
-        self.st.pop("g", None)
+        s = out[0][:, 4].max()       # 모든 후보의 신뢰도 중 최댓값 하나를 역전파한다
+        self.st.pop("g", None)       # 앞 영상의 기울기가 남아 있지 않게 지운다
         s.backward()
-        a, g = self.st["a"][0], self.st["g"][0]
+        a, g = self.st["a"][0], self.st["g"][0]      # 묶음 축을 떼면 (채널, 세로 칸, 가로 칸)
         if self.kind == "hires":   # HiResCAM: 기울기×활성을 칸마다 곱해 위치를 보존 (Draelos & Carin 2020)
             cam = torch.relu((g * a).sum(0)).detach().cpu().numpy()
         else:                      # Grad-CAM: 채널별 평균 기울기로 가중 (Selvaraju 2017)
             cam = torch.relu((g.mean((1, 2), keepdim=True) * a).sum(0)).detach().cpu().numpy()
+        # 층의 칸 지도를 입력 크기로 키운 뒤 채운 여백을 잘라내고, 원래 영상 크기로 되돌린다
         cam = cv2.resize(cam, (IMGSZ, IMGSZ), interpolation=cv2.INTER_LINEAR)[top:top + nh, left:left + nw]
         return cv2.resize(cam, (w, h), interpolation=cv2.INTER_LINEAR), float(s.detach())
 
 
 def region(shape, rects, pad=PAD):
+    """네모들을 pad px 씩 넓혀 칠한 bool 마스크. shape: (세로, 가로), rects: x0, y0, x1, y1 (픽셀). 네모가 없으면 모두 False."""
     m = np.zeros(shape, bool)
     for x0, y0, x1, y1 in rects:
         m[max(0, int(y0) - pad):int(np.ceil(y1)) + pad, max(0, int(x0) - pad):int(np.ceil(x1)) + pad] = True
@@ -83,9 +95,15 @@ def region(shape, rects, pad=PAD):
 
 
 def overlay(rgb, cam, rects_g=(), rects_b=()):
+    """영상 위에 CAM 을 색으로 겹친 그림. rects_g: 초록으로 그릴 정답 이물 박스, rects_b: 하늘색으로 그릴 미끼 네모.
+
+    반환: (세로, 가로, 3) uint8 RGB.
+    """
     v = rgb.astype(np.float32)
-    c = cam / (cam.max() + 1e-9)
+    c = cam / (cam.max() + 1e-9)         # 영상마다 최댓값 1 로 맞춘다
+    # applyColorMap 은 BGR 로 주므로 채널 순서를 뒤집어 RGB 로 쓴다
     heat = cv2.applyColorMap((c * 255).astype(np.uint8), cv2.COLORMAP_INFERNO)[:, :, ::-1].astype(np.float32)
+    # 겹치는 세기(투명도)는 살짝 흐린 CAM 으로 정한다. 0.6 제곱으로 약한 근거도 보이게 하고 최대 0.85 까지만 덮는다
     c = cv2.GaussianBlur(c, (0, 0), 1.2)
     c = c / (c.max() + 1e-9)
     a = (0.85 * np.clip(c, 0, 1) ** 0.6)[..., None]     # 근거가 있는 곳에만 색을 입히고 나머지는 원본 그대로
@@ -98,6 +116,7 @@ def overlay(rgb, cam, rects_g=(), rects_b=()):
 
 
 def main():
+    """두 모델의 CAM 을 원본 · 미끼 입력에서 구해, 근거가 이물 · 미끼 · 표시 영역에 든 비율을 집계하고 예시 그림을 저장한다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--clean", default="ratio3_e100")
@@ -116,6 +135,7 @@ def main():
     man = man[man["labeled"] & (man["split"] == args.split)].set_index("id")
     ids = man.index.tolist()
     gt = M.load_gt(ids, data / "clean" / "labels", {i: (r.w, r.h) for i, r in man.iterrows()})
+    # marks.csv: kind 가 fake 인 줄은 미끼 네모를 그릴 자리, real 인 줄은 표시영역비율을 재는 자리로 쓴다
     marks = pd.read_csv(data / "marks.csv")
     bait = marks[(marks["kind"] == "fake") & marks["id"].isin(ids)]
     real = marks[(marks["kind"] == "real") & marks["id"].isin(ids)]
@@ -136,18 +156,21 @@ def main():
                 cam, s = gc(imgs[i])
                 cams[(tag, cond, i)] = cam
                 shp = cam.shape
+                # 세 영역 마스크: g_m 정답 이물(±3px), b_m 미끼 네모(±3px, C 만), k_m 표시 자리(±1px)
                 g_m = region(shp, gt[i])
                 b_rects = bait.loc[bait["id"] == i, ["x0", "y0", "x1", "y1"]].to_numpy() if cond == "C_미끼" else np.zeros((0, 4))
                 b_m = region(shp, b_rects)
                 k_m = region(shp, real.loc[real["id"] == i, ["x0", "y0", "x1", "y1"]].to_numpy(), pad=1)
+                # CAM 은 0 이상이라 전체 합으로 나누면 '근거의 몇 % 가 그 영역에 있나'가 된다
                 tot = cam.sum() + 1e-12
-                py, px = np.unravel_index(np.argmax(cam), shp)
+                py, px = np.unravel_index(np.argmax(cam), shp)       # CAM 최댓값의 (행, 열)
                 peak = "이물" if g_m[py, px] else "미끼" if b_m[py, px] else "그밖"
                 rows.append(dict(model=tag, cond=cond, id=i, top_score=round(s, 4),
                                  이물비율=cam[g_m].sum() / tot, 미끼비율=cam[b_m].sum() / tot if len(b_rects) else np.nan,
                                  표시영역비율=cam[k_m].sum() / tot if cond == "A_원본" else np.nan,
                                  이물면적=g_m.mean(), 미끼면적=b_m.mean() if len(b_rects) else np.nan,
                                  최고점=peak))
+        # 다음 모델을 올리기 전에 GPU 메모리를 비운다
         del gc
         torch.cuda.empty_cache()
     df = pd.DataFrame(rows)
@@ -175,6 +198,7 @@ def main():
             b_rects = bait.loc[bait["id"] == i, ["x0", "y0", "x1", "y1"]].to_numpy() if cond == "C_미끼" else ()
             row = [im] + [overlay(im, cams[(t, cond, i)], gt[i], b_rects) for t in ["원본학습", "정제본학습"]]
             # 제품 부분만 잘라 크게 (배경 여백은 근거와 무관)
+            # 영상 중앙값보다 25 넘게 어두운 화소를 제품으로 보고, 그 범위에 8px 여유를 두어 자른다
             ys, xs = np.nonzero(cv2.cvtColor(im, cv2.COLOR_RGB2GRAY) < np.median(im) - 25)
             y0, y1 = max(ys.min() - 8, 0), min(ys.max() + 8, im.shape[0])
             x0, x1 = max(xs.min() - 8, 0), min(xs.max() + 8, im.shape[1])
@@ -182,6 +206,7 @@ def main():
             im = row[0]
             sep = np.full((im.shape[0], 6, 3), 255, np.uint8)
             t = np.hstack([row[0], sep, row[1], sep, row[2]])
+            # 줄마다 너비가 1800px 이 되도록 같은 배율로 키운다
             tiles.append(cv2.resize(t, None, fx=900 / t.shape[1] * 2, fy=900 / t.shape[1] * 2,
                                     interpolation=cv2.INTER_NEAREST))
         w = max(t.shape[1] for t in tiles)

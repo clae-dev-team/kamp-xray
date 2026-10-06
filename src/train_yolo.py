@@ -23,8 +23,8 @@ import matplotlib.pyplot as plt
 
 import metrics as M
 
-ROOT = Path(__file__).resolve().parents[1]
-RECALL_TARGET = 0.95
+ROOT = Path(__file__).resolve().parents[1]   # 저장소 최상위 폴더
+RECALL_TARGET = 0.95   # 재현율 우선 임계값의 목표 재현율 (베이스라인 · CNN 과 같은 값)
 
 
 def weights_path(name):
@@ -38,8 +38,14 @@ def weights_path(name):
 
 
 def predict(model, paths, ids, imgsz, batch=32):
+    """영상 여러 장을 예측해 한 표로 모은다.
+
+    paths · ids: 같은 길이의 영상 경로와 id 목록. imgsz: 추론 입력 크기(px). batch: 한 번에 넣는 장수.
+    반환: 열 id, x0, y0, x1, y1(원본 영상 픽셀), score(신뢰도 0~1) 인 표. 박스가 없어도 열은 그대로다.
+    """
     rows = []
     for k in range(0, len(paths), batch):
+        # conf=0.001: 낮은 점수 박스까지 받아 두고 임계값은 채점할 때 정한다. 영상당 박스는 100개까지
         res = model.predict([str(p) for p in paths[k:k + batch]], imgsz=imgsz, conf=0.001,
                             max_det=100, verbose=False)
         for i, r in zip(ids[k:k + batch], res):
@@ -50,6 +56,10 @@ def predict(model, paths, ids, imgsz, batch=32):
 
 
 def main():
+    """학습(--skip-train 이면 생략) → 전 분할 예측 → 임계값 결정(val) → 채점 → 결과 저장.
+
+    runs/<name>/ 에 학습 기록과 가중치를, results/yolo_<name>/ 에 pred_<분할>.csv, metrics.json, pr_test.png 를 남긴다.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--variant", default="clean")
@@ -64,6 +74,7 @@ def main():
     ap.add_argument("--skip-train", action="store_true")
     args = ap.parse_args()
 
+    # 인자 확인이 끝난 뒤에 불러온다 (--help 나 인자 오류 때는 불러오지 않는다)
     from ultralytics import YOLO
 
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
@@ -72,45 +83,55 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     run_dir = ROOT / "runs" / args.name
 
+    # 1) 학습
     if not args.skip_train:
         model = YOLO(args.model)
         model.train(
             data=str(ROOT / args.data) if args.data else str(data / f"{args.variant}.yaml"), imgsz=args.imgsz, epochs=args.epochs,
             batch=args.batch, seed=args.seed, deterministic=True, workers=2,
             project=str(ROOT / "runs"), name=args.name, exist_ok=True,
-            # 흑백 X-ray라 색 증강은 끈다. 상하·좌우 뒤집기는 물리적으로 자연스럽다.
+            # 흑백 X-ray라 색조 · 채도 증강은 끈다. 상하·좌우 뒤집기는 물리적으로 자연스럽다.
+            # 여기서 정하지 않은 증강(모자이크, 크기 · 위치 변화)은 Ultralytics 기본값을 따른다.
+            # hsv_h · hsv_s = 색조 · 채도(0 으로 끔), hsv_v = 밝기 변화 폭(남겨 둠), flipud · fliplr = 뒤집을 확률
             hsv_h=0.0, hsv_s=0.0, hsv_v=0.3, flipud=0.5, fliplr=0.5,
+            # --patience 0 이면 에폭 수보다 큰 값을 넘겨 조기 종료가 걸리지 않게 한다
             patience=args.patience if args.patience > 0 else args.epochs + 1, plots=True, verbose=False,
         )
+    # 에폭 고정 학습이면 마지막 에폭 가중치를 final.pt 로 복사해 둔다 (weights_path 가 이 파일을 먼저 찾는다)
     if not args.skip_train and args.patience == 0:
         import shutil
         shutil.copy(run_dir / "weights" / "last.pt", run_dir / "weights" / "final.pt")
     model = YOLO(str(weights_path(args.name)))
 
+    # 2) 예측: 정답(라벨)이 있는 영상만, 학습에 쓴 데이터와 상관없이 <variant> 영상으로
     man = pd.read_csv(data / "manifest.csv")
     man = man[man["labeled"]].set_index("id")
-    sizes = {i: (r.w, r.h) for i, r in man.iterrows()}
+    sizes = {i: (r.w, r.h) for i, r in man.iterrows()}   # {id: (너비, 높이) px}
     split = {s: man.index[man["split"] == s].tolist() for s in ["train", "val", "test"]}
     img_dir, label_dir = data / args.variant / "images", data / args.variant / "labels"
     gt = {s: M.load_gt(ids, label_dir, sizes) for s, ids in split.items()}
     preds = {s: predict(model, [img_dir / f"{i}.png" for i in ids], ids, args.imgsz)
              for s, ids in split.items()}
 
+    # 3) val 에서 임계값 두 가지: F1 최대, 재현율 우선(F1 기준보다 높아지지 않게 둘 중 작은 값)
     n_val = sum(len(g) for g in gt["val"].values())
     pm_val, _ = M.match(preds["val"], gt["val"])
     thr = {"F1최대": M.best_f1_threshold(pm_val, n_val)}
     thr[f"재현율{int(RECALL_TARGET * 100)}"] = min(thr["F1최대"], M.recall_threshold(pm_val, n_val, RECALL_TARGET))
 
+    # 4) 모든 분할 채점. metrics 의 키는 "<분할>/<임계값 이름>/<맞춤 기준>" 이다
     res = {"params": vars(args), "thresholds": thr, "metrics": {}}
     for s in ["train", "val", "test"]:
         for name, t in thr.items():
             for rule in ["center", "iou50"]:
                 res["metrics"][f"{s}/{name}/{rule}"] = M.evaluate(preds[s], gt[s], t, rule)
+    # 박스 전체를 임계값으로 자르지 않고 저장한다. tp · gt_idx 열은 중심 일치 기준이다
     for s, p in preds.items():
         pm, _ = M.match(p, gt[s])
         pm.to_csv(out / f"pred_{s}.csv", index=False, encoding="utf-8-sig")
     json.dump(res, open(out / "metrics.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
+    # 5) test PR 곡선 (중심 일치 · IoU 0.5 두 기준)
     plt.rcParams["font.family"] = "Malgun Gothic"
     fig, ax = plt.subplots(figsize=(5, 4.2), dpi=150)
     n_test = sum(len(g) for g in gt["test"].values())

@@ -29,19 +29,25 @@ import metrics as M
 from train_yolo import predict, weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
-MARGIN = 2
+MARGIN = 2           # 표시 사각형을 바깥으로 넓혀 주는 여유 (px). 예측 중심이 이 안에 들면 찾은 것으로 본다
 
 
 def ci(k, n):
-    """Clopper–Pearson 95% 구간."""
+    """Clopper–Pearson 95% 구간.
+
+    n 번 가운데 k 번 성공했을 때 비율의 [하한, 상한] (소수 넷째 자리까지). k 가 0 이면 하한 0, k 가 n 이면 상한 1.
+"""
     lo = 0.0 if k == 0 else float(beta.ppf(0.025, k, n - k + 1))
     hi = 1.0 if k == n else float(beta.ppf(0.975, k + 1, n - k))
     return [round(lo, 4), round(hi, 4)]
 
 
 def score_marks(marks, boxes):
-    """표시마다 그 안에 중심이 든 예측의 최고 점수. boxes 에는 cx, cy 열이 있어야 한다."""
-    by = dict(tuple(boxes.groupby("id")))
+    """표시마다 그 안에 중심이 든 예측의 최고 점수. boxes 에는 cx, cy 열이 있어야 한다.
+
+    marks : 표시 표(열 id, x0, y0, x1, y1). 반환: marks 행 순서의 점수 배열. 안에 든 예측이 없으면 0.
+"""
+    by = dict(tuple(boxes.groupby("id")))               # {사진 id: 그 사진의 예측}
     best = np.zeros(len(marks))
     for k, r in enumerate(marks.itertuples()):
         b = by.get(r.id)
@@ -54,6 +60,12 @@ def score_marks(marks, boxes):
 
 
 def main():
+    """표시 자리와 예측을 대조해 재현율 · 표시 밖 예측 · 가짜 표시 반응 · 사진 판정을 집계한다.
+
+    marks_scored.csv   : marks.csv 에 machine date labeled split score(자리의 최고 점수) found(합격선 이상) box_like 를 붙인 표
+    by_machine_date.csv: 정답 없는 사진의 호기 · 날짜별 표시수 찾음 사진수 재현율 학습_날짜와_겹침
+    outside_boxes.csv  : 정답 없는 사진에서 어떤 표시에도 들지 않은 합격선 이상 예측
+"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--yolo", default="ratio3_e100")
     ap.add_argument("--boxes", default="results/unlabeled_check/all_boxes.csv")
@@ -72,13 +84,15 @@ def main():
         predict(YOLO(str(weights_path(args.yolo))), [data / "clean/images" / f"{i}.png" for i in ids], ids, 640).to_csv(
             ROOT / args.boxes, index=False)
     boxes = pd.read_csv(ROOT / args.boxes)
-    assert boxes["id"].nunique() <= len(man) and set(boxes["id"]) <= set(man["id"])
+    assert boxes["id"].nunique() <= len(man) and set(boxes["id"]) <= set(man["id"])     # 목록에 없는 사진의 박스가 섞이지 않았는지
     boxes["cx"], boxes["cy"] = (boxes.x0 + boxes.x1) / 2, (boxes.y0 + boxes.y1) / 2
+    # 표시 자리(prepare.py 가 지우면서 적어 둔 것)에 호기 · 날짜 · 정답 유무 · 분할을 붙인다
     marks = pd.read_csv(data / "marks.csv").merge(man[["id", "machine", "date", "labeled", "split"]], on="id")
     marks["score"] = score_marks(marks, boxes)
     marks["found"] = marks["score"] >= t_low
 
     def recall(m):
+        """표시 표 m 의 재현율 요약: {표시수, 찾음, 재현율, 95%구간}. 표시가 없으면 재현율 0, 구간 None."""
         k, n = int(m["found"].sum()), len(m)
         return {"표시수": n, "찾음": k, "재현율": round(k / max(n, 1), 4), "95%구간": ci(k, n) if n else None}
 
@@ -89,7 +103,8 @@ def main():
     not_box = marks[(marks.kind == "real") & ~marks.box_like]
     real = marks[(marks.kind == "real") & marks.box_like]
     marks.to_csv(out / "marks_scored.csv", index=False, encoding="utf-8-sig")
-    un, lab = real[~real.labeled], real[real.labeled]
+    un, lab = real[~real.labeled], real[real.labeled]       # 정답 없는 사진의 표시 / 정답 있는 사진의 표시
+    # 학습 사진이 찍힌 (호기, 날짜) 묶음. 이 묶음에 들지 않는 날의 사진만 따로 집계한다 (un_new)
     train_dates = set(map(tuple, man[man.labeled & (man.split == "train")][["machine", "date"]].drop_duplicates().to_numpy()))
     un_new = un[[(m, d) not in train_dates for m, d in zip(un.machine, un.date)]]
     summary = {"모델": args.yolo, "합격선": t_low, "불합격선": t_high,
@@ -113,7 +128,7 @@ def main():
     hi = boxes[(boxes.score >= t_low) & boxes["id"].isin(man.loc[~man.labeled, "id"])].copy()
     rb = dict(tuple(real.groupby("id")))
     outside = []
-    for r in hi.itertuples():
+    for r in hi.itertuples():                           # 그 사진에 표시가 없거나, 예측 중심이 어떤 표시(±MARGIN)에도 들지 않으면 표시 밖
         m = rb.get(r.id)
         outside.append(m is None or not ((m.x0 - MARGIN <= r.cx) & (r.cx <= m.x1 + MARGIN) & (m.y0 - MARGIN <= r.cy) & (r.cy <= m.y1 + MARGIN)).any())
     hi["outside"] = outside
@@ -126,11 +141,12 @@ def main():
     hi[hi.outside].to_csv(out / "outside_boxes.csv", index=False, encoding="utf-8-sig")
 
     # 사진 단위 판정 (전부 불량 폴더)
+    # 사진별 최고 점수를 목록의 행 순서로 맞춘다. 예측이 하나도 없는 사진은 0 점(합격)이다
     top = boxes.groupby("id")["score"].max().reindex(man["id"]).fillna(0)
     top.index = man.index
     v = np.where(top >= t_high, "불합격", np.where(top >= t_low, "재검사", "합격"))
     um = man[~man.labeled].assign(판정=v[~man.labeled.to_numpy()])
-    has_mark = um["id"].isin(un["id"])
+    has_mark = um["id"].isin(un["id"])                  # 이물 표시 사각형이 하나라도 있는 사진
     summary["사진_판정(정답없는_사진)"] = {"표시가_있는_사진": um[has_mark]["판정"].value_counts().to_dict(),
                                  "표시가_없는_사진": um[~has_mark]["판정"].value_counts().to_dict()}
 
@@ -139,6 +155,7 @@ def main():
     g["재현율"] = (g["찾음"] / g["표시수"]).round(4)
     g["학습_날짜와_겹침"] = [(m, d) in train_dates for m, d in zip(g.machine, g.date)]
     g.to_csv(out / "by_machine_date.csv", index=False, encoding="utf-8-sig")
+    # 놓친 표시를 둘로 나눠 센다: 그 자리에 예측이 아예 없던 것(점수 0)과, 약한 신호(0.3 이상 합격선 미만)는 있던 것
     summary["놓친_표시"] = {"건수": int((~un.found).sum()), "점수0(예측없음)": int((un.score == 0).sum()),
                         "점수_0.3~합격선": int(((un.score >= 0.3) & (un.score < t_low)).sum()),
                         "호기별": {int(k): int((~v_.found).sum()) for k, v_ in un.groupby("machine")}}

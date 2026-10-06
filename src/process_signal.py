@@ -11,7 +11,8 @@
   띠밖_비율     : 이물 가운데 어두운 띠 밖에 있는 비율 (평소 자리는 띠 끝)
   대비_중앙     : 주변보다 어두운 정도의 중앙값
 경보: 호기별로 처음 BASE_FRAC 의 날짜를 기준 구간으로 삼아, 띠밖_비율이 기준 비율의 3시그마 상한(p 관리도)을 넘는 날,
-      이물_사진당이 3시그마 상한(u 관리도)을 넘는 날을 표시한다. 하루 이물이 MIN_N 개 미만인 날은 판단하지 않는다.
+      이물_사진당이 3시그마 한계(u 관리도)를 위나 아래로 벗어난 날을 표시한다.
+      자리 경보는 하루 이물이 MIN_N 개 미만인 날, 개수 경보는 사진이 MIN_PHOTOS 장 미만인 날에는 판단하지 않는다.
 
 한계 (반드시 함께 읽을 것)
   - 받은 사진은 모두 불량으로 분류된 것이라 '불량률'은 계산할 수 없다. 여기서 보는 것은 불량의 성격 변화뿐이다.
@@ -37,12 +38,18 @@ from conditions import Img
 from defect_stats import measure
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE_FRAC = 0.3
+BASE_FRAC = 0.3           # 기준 구간: 호기별로 날짜 순서 앞쪽 이 비율의 날짜 (최소 이틀)
 MIN_N = 20                # 자리 경보: 하루 이물 수가 이보다 적으면 판단하지 않는다
 MIN_PHOTOS = 8            # 개수 경보: 하루 사진 수가 이보다 적으면 판단하지 않는다
 
 
 def main():
+    """이물별 특징표(defects.csv)를 만들고 호기 · 날짜별로 모아 관리 한계와 경보를 붙인다 (daily.csv, summary.json, signal.png).
+
+    defects.csv : id machine date labeled score in_product in_band edge(가장자리까지 px) u v(제품 외곽 상자 기준 자리) contrast area
+    daily.csv   : machine date 이물수 이물사진수 띠밖 대비_중앙 크기_중앙 전체사진수 이물_사진당 띠밖_비율
+                  기준구간 경보_자리 경보_개수 상한_띠밖 상한_사진당 하한_사진당
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--boxes", default="results/unlabeled_check/all_boxes.csv")
     args = ap.parse_args()
@@ -54,14 +61,15 @@ def main():
     boxes = pd.read_csv(ROOT / args.boxes)
     boxes = boxes[boxes.score >= t_low]
 
+    # 이물마다 자리와 모양의 특징을 붙인다. 자리는 박스 중심 화소에서 읽는다
     rows = []
     for i, g in tqdm(boxes.groupby("id"), desc="이물 특징"):
         I = Img.get(data / "clean/images" / f"{i}.png")
         h, w = I["g"].shape
         ys, xs = np.nonzero(I["pm"])
-        if len(xs) == 0:
+        if len(xs) == 0:                                # 제품 영역을 찾지 못한 사진은 뺀다
             continue
-        px0, px1, py0, py1 = xs.min(), xs.max(), ys.min(), ys.max()
+        px0, px1, py0, py1 = xs.min(), xs.max(), ys.min(), ys.max()     # 제품 외곽 상자. u, v 는 이 상자 안에서의 0~1 자리다
         for b in g.itertuples():
             cx, cy = (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2
             xi, yi = int(np.clip(cx, 0, w - 1)), int(np.clip(cy, 0, h - 1))
@@ -73,6 +81,7 @@ def main():
     d = pd.DataFrame(rows)
     d.to_csv(out / "defects.csv", index=False, encoding="utf-8-sig")
 
+    # 호기 · 날짜별 집계. 이물사진수 = 이물이 하나라도 검출된 사진 수, 전체사진수 = 그날 그 호기의 모든 사진 수
     daily = d.groupby(["machine", "date"]).agg(이물수=("id", "size"), 이물사진수=("id", "nunique"), 띠밖=("in_band", lambda s: int((~s).sum())),
                                               대비_중앙=("contrast", "median"), 크기_중앙=("area", "median")).reset_index()
     daily["전체사진수"] = [int(((man.machine == m) & (man.date == dt)).sum()) for m, dt in zip(daily.machine, daily.date)]
@@ -86,15 +95,18 @@ def main():
     daily["상한_띠밖"], daily["상한_사진당"], daily["하한_사진당"] = np.nan, np.nan, np.nan
     for mc, g in daily.groupby("machine"):
         g = g.sort_values("date")
-        nb = max(2, int(round(len(g) * BASE_FRAC)))
+        nb = max(2, int(round(len(g) * BASE_FRAC)))     # 기준 구간의 날짜 수
         base = g.iloc[:nb]
         p0 = (base["띠밖"].sum() + 0.5) / (base["이물수"].sum() + 1)          # 기준 구간에 0건이어도 상한이 0 이 되지 않게
-        u0 = base["이물수"].sum() / base["이물사진수"].sum()
+        u0 = base["이물수"].sum() / base["이물사진수"].sum()                   # 기준 구간의 사진당 이물 수
+        # p 관리도: 그날 이물 n 개 가운데 띠 밖 비율의 표준편차는 √(p0(1-p0)/n). 날마다 n 이 달라 한계도 날마다 다르다
         ucl_p = p0 + 3 * np.sqrt(p0 * (1 - p0) / g["이물수"])
+        # u 관리도: 사진 n 장의 사진당 개수의 표준편차는 √(u0/n) (포아송 가정). 하한은 0 아래로 내려가지 않게 자른다
         ucl_u = u0 + 3 * np.sqrt(u0 / g["이물사진수"])
         ok = g["이물수"] >= MIN_N
         lcl_u = np.clip(u0 - 3 * np.sqrt(u0 / g["이물사진수"]), 0, None)
         ok_u = g["이물사진수"] >= MIN_PHOTOS
+        # 자리 경보 = 띠 밖 비율이 상한을 넘은 날, 개수 경보 = 사진당 이물 수가 상한을 넘거나 하한 아래로 내려간 날
         f_p, f_u = ok & (g["띠밖_비율"] > ucl_p), ok_u & ((g["이물_사진당"] > ucl_u) | (g["이물_사진당"] < lcl_u))
         daily.loc[g.index, "기준구간"] = [k < nb for k in range(len(g))]
         daily.loc[g.index, "상한_띠밖"] = ucl_p.round(4)
@@ -114,13 +126,15 @@ def main():
     daily.round(4).to_csv(out / "daily.csv", index=False, encoding="utf-8-sig")
     json.dump(summary, open(out / "summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
+    # 그림: 호기마다 한 줄. 왼쪽 = 사진당 이물 수, 오른쪽 = 띠 밖 이물 비율(%).
+    # 회색 바탕 = 기준 구간, 점선 = 관리 한계, 초록 점 = 판단한 날, 주황 테두리 = 경보가 난 날
     plt.rcParams["font.family"] = "Malgun Gothic"
     fig, axes = plt.subplots(3, 2, figsize=(7.4, 5.4), dpi=170)
     for row, (mc, g) in zip(axes, daily.groupby("machine")):
         g = g.sort_values("date").reset_index(drop=True)
         x = np.arange(len(g))
         ok_p, ok_u = (g["이물수"] >= MIN_N).to_numpy(), (g["이물사진수"] >= MIN_PHOTOS).to_numpy()
-        ticks = x[::max(1, len(x) // 7)]
+        ticks = x[::max(1, len(x) // 7)]                # 가로축은 날짜 순번. 눈금 글자는 날짜(YYYYMMDD)에서 월/일만 떼어 쓴다
         for ax, col, lims, fcol, scale, name in ((row[0], "이물_사진당", ("하한_사진당", "상한_사진당"), "경보_개수", 1, "사진당 이물 수"),
                                                  (row[1], "띠밖_비율", ("상한_띠밖",), "경보_자리", 100, "띠 밖 이물 (%)")):
             ok = ok_u if col == "이물_사진당" else ok_p

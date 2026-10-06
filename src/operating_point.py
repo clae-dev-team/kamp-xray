@@ -40,7 +40,10 @@ WEAK = 0.3                               # 2순위(약한 신호) 하한: zone_r
 
 
 def tier_shares(x, t_low, t_high):
-    """점수 배열을 (자동 배출, 1순위, 2순위, 3순위) 비율로."""
+    """점수 배열을 (자동 배출, 1순위, 2순위, 3순위) 비율로.
+
+    x : 제품별 영상 최고 점수. 불합격선 이상 / 합격선~불합격선 / WEAK~합격선 / WEAK 미만 순서의 비율 네 개(합 1)를 돌려준다.
+    """
     x = np.asarray(x)
     return [float((x >= t_high).mean()), float(((x >= t_low) & (x < t_high)).mean()),
             float(((x >= WEAK) & (x < t_low)).mean()), float((x < WEAK).mean())]
@@ -53,50 +56,62 @@ def rates(d, n, t_low, t_high):
 
 
 def cost(r, p, R, S=SCRAP):
+    """제품 하나의 기대 비용 (재검사 1건 = 1). r 은 rates() 의 네 비율, p 는 불량률, R 은 놓침 비용, S 는 정상 폐기 비용.
+
+    불량(확률 p): 합격하면 R, 재검사면 1, 불합격이면 0.  정상(확률 1-p): 재검사면 1, 불합격이면 S, 합격이면 0.
+    """
     d_pass, d_re, n_re, n_rej = r
     return p * (d_pass * R + d_re) + (1 - p) * (n_re + n_rej * S)
 
 
 def best_thresholds(d, n, p, R):
-    """검증 점수에서 기대 비용이 최소인 (합격선, 불합격선). 후보는 관측 점수 사이의 중간값."""
+    """검증 점수에서 기대 비용이 최소인 (합격선, 불합격선). 후보는 관측 점수 사이의 중간값.
+
+    d : 불량 점수, n : 정상 점수, p : 불량률, R : 놓침 비용. 합격선 <= 불합격선인 모든 후보 쌍을 다 해 본다.
+    """
     s = np.unique(np.r_[d, n])
+    # 기준선은 관측 점수 사이 어디에 두어도 결과가 같으므로 중간값만 본다. 0 = 모두 재검사 이상, 1.0001 = 아무것도 불합격시키지 않음
     cand = np.r_[0.0, (s[1:] + s[:-1]) / 2, 1.0001]
     best = (np.inf, 0.0, 1.0001)
     for tl in cand:
         d_pass = (d < tl).mean()
         for th in cand[cand >= tl]:
             c = cost((d_pass, ((d >= tl) & (d < th)).mean(), ((n >= tl) & (n < th)).mean(), (n >= th).mean()), p, R)
-            if c < best[0] - 1e-12:
+            if c < best[0] - 1e-12:                     # 비용이 같으면 먼저 본 쪽(낮은 기준선)을 남긴다
                 best = (c, float(tl), float(th))
     return best[1], best[2]
 
 
 def main():
+    """비용표(cost_table.csv) · 우선순위 곡선(priority.csv, priority.png) · 세 단 집계(tiers.csv)를 만들고 summary.json 에 모은다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--yolo", default="ratio3_e100")
     args = ap.parse_args()
     m = args.yolo
     out = ROOT / "results" / "operating_point"
     out.mkdir(parents=True, exist_ok=True)
+    # judge.py 가 저장한 영상별 점수표. 모델 이름의 열에 그 모델의 영상 최고 점수가 들어 있고, kind 열로 종류를 가른다
     val = pd.read_csv(ROOT / "results/judge/scores_val.csv")
     test = pd.read_csv(ROOT / "results/judge/scores_test.csv")
     spec = pd.read_csv(ROOT / f"results/testpiece_val_{m}/spec.csv")
     spec = spec[spec["model"] == "YOLO"]
+    # sets[분할] = d: 불량 점수(실제 불량 + 사양 안 합성 불량), n: 정상 점수, real: 실제 불량만의 점수
     sets = {}
     for name, df in (("val", val), ("test", test)):
         ok = in_spec(df, spec)
         sets[name] = dict(d=df.loc[ok, m].to_numpy(), n=df.loc[df.kind == "normal", m].to_numpy(),
                           real=df.loc[df.kind == "real_ng", m].to_numpy())
     g = json.load(open(ROOT / "results/risk_threshold/summary.json", encoding="utf-8"))["채택"]
-    g_low, g_high = g["합격선"], g["불합격선"]
+    g_low, g_high = g["합격선"], g["불합격선"]            # 지금 쓰는 보장 기준선
 
     # 1. 비용 기반 운영점
+    # 최적 기준선은 검증 점수에서 고르고, 비용과 건수는 시험 점수에서 잰다. 건수는 제품 1만 개당으로 적는다
     rows = []
     for p in PREVALENCE:
         for R in RATIOS:
             tl, th = best_thresholds(sets["val"]["d"], sets["val"]["n"], p, R)
-            rt = rates(sets["test"]["d"], sets["test"]["n"], tl, th)
-            rg = rates(sets["test"]["d"], sets["test"]["n"], g_low, g_high)
+            rt = rates(sets["test"]["d"], sets["test"]["n"], tl, th)            # 최적 기준선의 결과
+            rg = rates(sets["test"]["d"], sets["test"]["n"], g_low, g_high)     # 보장 기준선의 결과
             c_opt, c_g = cost(rt, p, R), cost(rg, p, R)
             rows.append({"불량률": p, "놓침/재검사_비용비": R, "최적_합격선": round(tl, 3), "최적_불합격선": round(min(th, 1.0), 3),
                          "최적_1만개당_재검사": round(1e4 * (p * rt[1] + (1 - p) * rt[2]), 1),
@@ -114,16 +129,18 @@ def main():
     pr_rows, curves = [], {}
     for p in PREVALENCE:
         s = np.r_[d, n]
+        # 표본의 불량 · 정상 수는 실제 비율과 다르므로 가중치로 맞춘다: 불량 전체의 무게가 p, 정상 전체의 무게가 1 - p
         w = np.r_[np.full(len(d), p / len(d)), np.full(len(n), (1 - p) / len(n))]
         isdef = np.r_[np.ones(len(d)), np.zeros(len(n))]
-        o = np.argsort(-s, kind="stable")
+        o = np.argsort(-s, kind="stable")               # 점수 높은 순
+        # frac = 여기까지 본 제품의 비율, rec = 여기까지 잡은 불량의 비율
         frac, rec = np.cumsum(w[o]), np.cumsum((w * isdef)[o]) / p
         curves[p] = (frac, rec)
         row = {"불량률": p}
-        for target in (0.90, 0.95, 0.99, 1.0):
+        for target in (0.90, 0.95, 0.99, 1.0):          # 포착률이 처음 목표에 닿는 자리의 검사 비율
             k = int(np.searchsorted(rec, target - 1e-12))
             row[f"불량 {int(target * 100)}% 포착에 필요한 검사 비율"] = round(float(frac[min(k, len(frac) - 1)]), 4)
-        for x in (0.01, 0.02, 0.05):
+        for x in (0.01, 0.02, 0.05):                    # 검사 비율이 x 를 넘지 않는 마지막 자리의 포착률
             k = int(np.searchsorted(frac, x, side="right")) - 1
             row[f"상위 {int(x * 100)}% 검사 시 포착률"] = round(float(rec[k]) if k >= 0 else 0.0, 4)
         pr_rows.append(row)
@@ -131,11 +148,12 @@ def main():
     pr.to_csv(out / "priority.csv", index=False, encoding="utf-8-sig")
 
     # 3. 우선순위 세 단 (시험 판정 세트)
+    # sd · sn · sr = 불량 · 정상 · 실제 불량의 단계별 비율 [자동 배출, 1순위, 2순위, 3순위]
     sd, sn, sr = tier_shares(d, g_low, g_high), tier_shares(n, g_low, g_high), tier_shares(real, g_low, g_high)
     tier_rows = []
     for p in PREVALENCE:
-        look1 = p * sd[1] + (1 - p) * sn[1]
-        look2 = look1 + p * sd[2] + (1 - p) * sn[2]
+        look1 = p * sd[1] + (1 - p) * sn[1]             # 1순위까지 사람이 보는 제품 비율 (자동 배출은 사람이 보지 않으므로 뺀다)
+        look2 = look1 + p * sd[2] + (1 - p) * sn[2]     # 2순위까지 보면 더해지는 양. 걸러진 불량에는 자동 배출분도 넣는다
         tier_rows.append({"불량률": p, "자동배출_제품비율": round(p * sd[0] + (1 - p) * sn[0], 4),
                           "1순위까지_사람이_보는_비율": round(look1, 4), "1순위까지_걸러진_불량": round(sd[0] + sd[1], 4),
                           "2순위까지_사람이_보는_비율": round(look2, 4), "2순위까지_걸러진_불량": round(sd[0] + sd[1] + sd[2], 4),
@@ -151,16 +169,19 @@ def main():
     bf, mf = ROOT / "results/unlabeled_check/all_boxes.csv", ROOT / "results/unlabeled_check/marks_scored.csv"
     if bf.exists() and mf.exists():
         man = pd.read_csv(ROOT / "data/manifest.csv")
-        top = pd.read_csv(bf).groupby("id")["score"].max()
+        top = pd.read_csv(bf).groupby("id")["score"].max()          # 사진별 최고 점수
         mk = pd.read_csv(mf)
-        marked = set(mk[(mk.kind == "real") & mk.box_like & ~mk.labeled]["id"])
+        marked = set(mk[(mk.kind == "real") & mk.box_like & ~mk.labeled]["id"])     # 이물 표시 사각형이 있는 정답 없는 사진
         un = man[~man.labeled]
+        # 예측 박스가 하나도 없는 사진은 점수 0 으로 둔다. t_m = 표시가 있는 사진, t_u = 표시가 없는 사진
         t_m = top.reindex([i for i in un["id"] if i in marked]).fillna(0).to_numpy()
         t_u = top.reindex([i for i in un["id"] if i not in marked]).fillna(0).to_numpy()
+        # 단계별 비율을 사진 수로 되돌린다
         cnt = lambda x: dict(zip(["자동배출", "1순위", "2순위", "3순위"], [int(round(v * len(x))) for v in tier_shares(x, g_low, g_high)]))
         tier_summary["정답없는_사진"] = {"이물표시가_있는_사진": {"사진수": len(t_m), **cnt(t_m)},
                                    "이물표시가_없는_사진": {"사진수": len(t_u), **cnt(t_u)}}
 
+    # 그림: 불량률별 우선순위 곡선(가로 = 사람이 검사하는 비율, 세로 = 잡아낸 불량)과 무작위 순서의 대각선
     plt.rcParams["font.family"] = "Malgun Gothic"
     fig, ax = plt.subplots(figsize=(6.2, 3.6), dpi=170)
     for p, c in zip(PREVALENCE, ["#8c5bb5", "#0a8f86", "#c96f24"]):
@@ -168,6 +189,7 @@ def main():
         ax.step(np.r_[0, f] * 100, np.r_[0, r] * 100, where="post", color=c, lw=1.8, label=f"불량률 {p * 100:g}%")
     ax.plot([0, 100], [0, 100], color="#9aa5b1", lw=1, ls="--", label="무작위 순서")
     p_mark = 0.001                                   # 단계 경계는 불량률 0.1% 곡선 위에 표시
+    # 곡선의 가로축은 점수 높은 순으로 본 비율이라 자동 배출분도 들어간다. k = 앞에서부터 더할 단계 수
     for name, k in (("1순위 끝", 2), ("2순위 끝", 3)):
         x_end = 100 * (p_mark * sum(sd[:k]) + (1 - p_mark) * sum(sn[:k]))
         y_end = 100 * sum(sd[:k])

@@ -42,33 +42,43 @@ from synth import band_mask, insert
 from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
-N_FRAMES = 4000
-EVERY = 10
-DEGRADE_FROM = 1000
-BLUR_MAX = 1.6
-NOISE_MAX = 6.0
-WINDOW = 20
+N_FRAMES = 4000              # 모의 생산 흐름의 사진 수
+EVERY = 10                   # 시험편 간격: 이 장수마다 한 장에 시험편을 넣는다 (시험편은 모두 N_FRAMES / EVERY 개)
+DEGRADE_FROM = 1000          # 열화가 시작되는 사진 번호 (가정)
+BLUR_MAX = 1.6               # 마지막 사진에서의 흐림: 가우시안 σ (px, 가정)
+NOISE_MAX = 6.0              # 마지막 사진에서의 잡음 표준편차 (회색 단계, 가정)
+WINDOW = 20                  # 경보를 판단하는 창: 최근 시험편 수
 CALIB = 1000                 # 경보선을 정하는 초기 구간 (열화 전)
 FALSE_ALARM = 0.01           # 평상시 한 창에서 우연히 경보가 날 확률 상한
-PIECE_D = 2.0
-SEED_OFFSET = 4242
+PIECE_D = 2.0                # 시험편 지름 (px)
+SEED_OFFSET = 4242           # 설정의 시드와 묶어 이 실험만의 난수열을 만든다
 
 
 def degrade(g, level, rng):
-    """level 0~1. 흐림과 잡음을 함께 키운다."""
+    """level 0~1. 흐림과 잡음을 함께 키운다.
+
+    g : 회색 영상(uint8). level 1 이면 흐림 σ = BLUR_MAX, 잡음 표준편차 = NOISE_MAX. 반환: 같은 크기의 uint8 영상.
+    """
     f = g.astype(np.float32)
     if level > 0:
         s = BLUR_MAX * level
+        # σ 가 0.05 이하로 아주 작을 때는 흐림을 건너뛴다. 흐림을 먼저 걸고 잡음을 더한다
         f = cv2.GaussianBlur(f, (0, 0), s) if s > 0.05 else f
         f = f + rng.normal(0, NOISE_MAX * level, f.shape).astype(np.float32)
     return np.clip(f.round(), 0, 255).astype(np.uint8)
 
 
 def level_at(i):
+    """i 번째 사진의 열화 수준. DEGRADE_FROM 전에는 0, 그 뒤로 선형으로 커져 마지막 사진에서 1."""
     return 0.0 if i < DEGRADE_FROM else (i - DEGRADE_FROM) / (N_FRAMES - 1 - DEGRADE_FROM)
 
 
 def main():
+    """모의 흐름을 돌려 시험편 검출 기록을 만들고, 경보 시점과 그때의 실제 이물 재현율을 구해 저장한다.
+
+    timeline.csv 의 열: frame src machine level piece(시험편을 넣은 사진인지) c0 hit other_alarms(시험편 밖 검출 수)
+                        g_noise g_id(기준 정상 영상의 잡음 수준과 번호, --reference 때만) rolling(최근 WINDOW 개 검출률)
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
     ap.add_argument("--yolo", default="ratio3_e100")
@@ -82,18 +92,21 @@ def main():
     rng = np.random.default_rng([cfg["seed"], SEED_OFFSET])
 
     model = YOLO(str(weights_path(args.yolo)))
+    # 채점 기준선 = 이 모델의 박스 기준선 (val 에서 F1 이 최대인 점수)
     thr = json.load(open(ROOT / f"results/yolo_{args.yolo}/metrics.json", encoding="utf-8"))["thresholds"]["F1최대"]
     # 시험편 진하기는 val 테스트피스 사양에서 정한다 (시험 사진으로 만든 사양을 설계값에 쓰지 않는다)
     spec = pd.read_csv(ROOT / f"results/testpiece_val_{args.yolo}/spec.csv")
     spec = spec[(spec["model"] == "YOLO") & (spec["d"] == PIECE_D)].set_index("machine")["min_c0"]
     man = pd.read_csv(data / "manifest.csv").set_index("id")
+    # 생산 흐름의 재료: 시험 분할 가짜 정상 사진. 사진마다 시험편을 넣을 수 있는 자리(제품 안 어두운 띠 화소)를 미리 구한다
     srcs = sorted(p.stem for p in (data / "normal" / "test").glob("*.png"))
     base = {s: np.asarray(Image.open(data / "normal" / "test" / f"{s}.png").convert("L")) for s in srcs}
-    pms = {}
+    pms = {}                                     # {사진 이름: (ys, xs)}
     for s, g in base.items():
         pm = product_mask(g)
         pms[s] = np.nonzero(band_mask(g, pm) & (pm > 0))
 
+    # 기준 정상 영상 (--reference 때만): g = 영상, m = 호기, band = 띠 화소 (ys, xs), pm = 제품 영역(참 · 거짓)
     refs = []
     if args.reference:
         gd = pd.read_csv(ROOT / "results/reference/reference.csv")
@@ -103,10 +116,12 @@ def main():
             refs.append(dict(g=g, m=int(r.machine), band=np.nonzero(band_mask(g, pm) & (pm > 0)), pm=pm > 0))
 
     def noise_level(g, pm):
+        """제품 영역 pm 의 잡음 수준: 영상에서 흐린 영상(σ 2px)을 뺀 고역 성분의 표준편차 (회색 단계)."""
         f = g.astype(np.float32)
         return float((f - cv2.GaussianBlur(f, (0, 0), 2))[pm].std())
 
     def detect(g):
+        """기준선 이상 예측 박스의 중심 좌표를 (N, 2) 배열 [x, y] 로 돌려준다. 없으면 (0, 2)."""
         r = model.predict(cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), imgsz=640, conf=thr, max_det=100, verbose=False)[0]
         b = r.boxes.xyxy.cpu().numpy()
         return np.stack([(b[:, 0] + b[:, 2]) / 2, (b[:, 1] + b[:, 3]) / 2], 1) if len(b) else np.zeros((0, 2))
@@ -121,19 +136,20 @@ def main():
         if args.reference and i % EVERY == EVERY - 1:   # 점검 사진 = 기준 정상 영상 (순서대로 돌아가며)
             ref = refs[(i // EVERY) % len(refs)]
             m, s, f = ref["m"], "reference", ref["g"].astype(np.float32)
-        if i % EVERY == EVERY - 1:
+        if i % EVERY == EVERY - 1:                      # EVERY 장 가운데 마지막 한 장에 시험편을 넣는다
             ys, xs = ref["band"] if ref else pms[s]
             k = rng.integers(len(xs))
-            cx, cy = xs[k] + rng.random(), ys[k] + rng.random()
-            c0 = float(spec.get(m, 0.30)) if pd.notna(spec.get(m, np.nan)) else 0.30
+            cx, cy = xs[k] + rng.random(), ys[k] + rng.random()     # 띠 화소 하나를 고르고 화소 안 자리는 무작위
+            c0 = float(spec.get(m, 0.30)) if pd.notna(spec.get(m, np.nan)) else 0.30    # 그 호기의 사양값이 없으면 0.30
             insert(f, cx, cy, PIECE_D, c0)
             piece = (cx, cy, c0)
+        # 시험편을 넣은 뒤에 열화를 건다 (시험편도 같은 장비를 지나가므로)
         lv = level_at(i)
         g = degrade(np.clip(f.round(), 0, 255).astype(np.uint8), lv, rng)
         pts = detect(g)
         hit = None
         n_other = len(pts)
-        if piece is not None:
+        if piece is not None:                           # 검출 = 예측 중심이 시험편 중심에서 7px 안. 나머지 예측은 정상 부위의 헛경보로 센다
             near = np.hypot(pts[:, 0] - piece[0], pts[:, 1] - piece[1]) <= 7 if len(pts) else np.zeros(0, bool)
             hit = bool(near.any())
             n_other = int((~near).sum())
@@ -142,22 +158,26 @@ def main():
                          g_noise=noise_level(g, ref["pm"]) if ref else None,
                          g_id=(i // EVERY) % len(refs) if ref else None))
     tl = pd.DataFrame(rows)
+    # 시험편을 넣은 사진만 모아 최근 WINDOW 개의 검출률(rolling)과 잡은 수(count)를 구한다
     p = tl[tl["piece"]].copy()
     p["rolling"] = p["hit"].astype(float).rolling(WINDOW).mean()
     tl = tl.merge(p[["frame", "rolling"]], on="frame", how="left")
     tl.to_csv(out / "timeline.csv", index=False, encoding="utf-8-sig")
     from scipy.stats import binom
-    full = p["frame"] >= WINDOW * EVERY
+    full = p["frame"] >= WINDOW * EVERY                             # 창이 다 차기 전의 시험편은 경보 판단에서 뺀다
+    # 관리 하한: 평상시 검출률이 base_rate 일 때 WINDOW 개 중 잡은 수는 이항분포 B(WINDOW, base_rate) 를 따른다.
+    # ppf 는 누적확률이 FALSE_ALARM 이상이 되는 가장 작은 수이므로, 그 수 미만으로 떨어질 확률(false_alarm_p)은 FALSE_ALARM 보다 작다.
     base_rate = float(p[p["frame"] < CALIB]["hit"].mean())
     lcl = int(binom.ppf(FALSE_ALARM, WINDOW, base_rate))          # 이 수 미만이면 경보
     false_alarm_p = float(binom.cdf(lcl - 1, WINDOW, base_rate))
     p["count"] = p["hit"].astype(float).rolling(WINDOW).sum()
     alarm = p[(p["count"] < lcl) & full & (p["frame"] >= CALIB)]
-    first = int(alarm["frame"].iloc[0]) if len(alarm) else None
-    pre = p[(p["count"] < lcl) & full & (p["frame"] < CALIB)]
+    first = int(alarm["frame"].iloc[0]) if len(alarm) else None     # 초기 구간이 끝난 뒤 처음 경보가 난 사진 번호
+    pre = p[(p["count"] < lcl) & full & (p["frame"] < CALIB)]       # 초기 구간(열화 전)에 난 경보 = 헛경보
     drift_first, pre_drift = None, None
     if args.reference:
         # 표류 지표: 같은 기준 정상 영상의 잡음 수준이 초기 구간 평균에서 3σ 넘게 벗어나면 (영상마다 기준을 따로 잡는다)
+        # g_z = (잡음 수준 - 그 영상의 초기 평균) / 그 영상의 초기 표준편차. 표준편차가 0 에 가까우면 0.001 로 받친다
         cal = p[p["frame"] < CALIB].groupby("g_id")["g_noise"].agg(["mean", "std"])
         p["g_z"] = (p["g_noise"] - p["g_id"].map(cal["mean"])) / p["g_id"].map(cal["std"]).clip(lower=1e-3)
         out_z = p[(p["frame"] >= CALIB) & (p["g_z"].abs() > 3)]
@@ -169,7 +189,8 @@ def main():
     sizes = {i: (r.w, r.h) for i, r in tm.iterrows()}
     gt = M.load_gt(tm.index.tolist(), data / "clean/labels", sizes)
     def real_recall(lv):
-        rr = np.random.default_rng([cfg["seed"], SEED_OFFSET, 7])
+        """실제 불량 시험 사진 전체에 열화 수준 lv 를 걸고 채점한 결과 (metrics.evaluate 의 사전: recall, FN 등, 중심 일치 기준)."""
+        rr = np.random.default_rng([cfg["seed"], SEED_OFFSET, 7])       # 부를 때마다 같은 난수열로 시작해 열화 수준끼리 잡음 조건을 맞춘다
         pr = []
         for i in tm.index:
             g = degrade(np.asarray(Image.open(data / "clean/images" / f"{i}.png").convert("L")), lv, rr)
@@ -178,7 +199,9 @@ def main():
                 pr.append(dict(id=i, x0=x0, y0=y0, x1=x1, y1=y1, score=float(sc)))
         return M.evaluate(pd.DataFrame(pr, columns=["id", "x0", "y0", "x1", "y1", "score"]), gt, thr, "center")
 
+    # 열화 수준 0, 0.1, ..., 1 에서의 실제 이물 재현율 곡선. 그림과 monitor_cusum.py 가 이 곡선을 보간해 쓴다
     curve = {round(lv, 2): real_recall(lv)["recall"] for lv in tqdm(np.linspace(0, 1, 11), desc="열화별 재현율")}
+    # 경보가 울린 바로 그 열화 수준에서 실제 이물을 얼마나 놓치고 있었는지 다시 잰다
     rec = {}
     for tag, fr in [("경보 시점", first), ("표류 경보 시점", drift_first)]:
         if fr is not None:
@@ -202,6 +225,7 @@ def main():
     json.dump(summary, open(out / "summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2, default=float)
     print(json.dumps(summary, ensure_ascii=False, indent=1, default=float))
 
+    # 그림: 시험편 검출률(최근 WINDOW 개)과, 같은 열화에서의 실제 이물 재현율(점선, 곡선 보간), 경보선과 경보 시점
     plt.rcParams["font.family"] = "Malgun Gothic"
     plt.rcParams["axes.unicode_minus"] = False
     fig, ax = plt.subplots(figsize=(8, 3.8), dpi=150)
@@ -211,7 +235,7 @@ def main():
     lv = np.array(list(curve)), np.array(list(curve.values()))
     ax.plot(fr, np.interp([level_at(i) for i in fr], *lv), color="#c96f24", lw=1.6, ls=":",
             label="같은 열화에서 실제 이물 재현율")
-    ax.plot([0, DEGRADE_FROM], [curve[0.0]] * 2, color="#c96f24", lw=1.6, ls=":")
+    ax.plot([0, DEGRADE_FROM], [curve[0.0]] * 2, color="#c96f24", lw=1.6, ls=":")      # 열화 전 구간은 수준 0 의 재현율로 수평선
     ax.axhline(lcl / WINDOW, color="#1d2733", lw=0.8, ls="--", label=f"경보선 ({WINDOW}개 중 {lcl}개)")
     if first:
         ax.axvline(first, color="#1d2733", lw=1.2)

@@ -45,53 +45,71 @@ from prepare import color_mask, restore
 from synth import insert
 from train_yolo import weights_path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]        # 저장소 맨 위 폴더
+# 사진 묶음의 내부 이름 → 화면에 보이는 이름. watch 는 감시 폴더로 들어온 사진이다
 KINDS = {"ng": "실제 불량", "ok": "정상", "faint": "옅은 이물", "watch": "들어온 사진"}
-RISK_RGB = (232, 148, 58)
+RISK_RGB = (232, 148, 58)     # 놓치기 쉬운 구역을 칠하는 색 (R, G, B)
 WEAK = 0.3                    # 2순위(약한 신호) 하한. operating_point.py · zone_rules.py 와 같은 값
-LOG = ROOT / "demo" / "log"
-DECISIONS = ("이물", "정상")
+LOG = ROOT / "demo" / "log"   # 작업자 확정 기록(confirm.csv)을 쌓는 폴더
+DECISIONS = ("이물", "정상")  # 작업자가 고를 수 있는 확정 값 (취소는 따로 처리한다)
 CHECK_N, CHECK_D, CHECK_NEAR = 20, 2.0, 7     # 자가 점검: monitor.py 의 WINDOW · PIECE_D · 맞춤 거리와 같은 값
 BLUR_MAX, NOISE_MAX = 1.6, 6.0                # 모의 열화 (monitor.py 와 같은 값)
-IMG_EXT = {".png", ".bmp", ".jpg", ".jpeg"}
+IMG_EXT = {".png", ".bmp", ".jpg", ".jpeg"}       # 감시 폴더에서 사진으로 보는 확장자
 
 
 class State:
-    lock = threading.Lock()
+    """서버 전체가 함께 쓰는 상태. 인스턴스를 만들지 않고 클래스 속성으로 쓴다.
+
+    setup() 이 채우는 것: 모델 · 기준선(t_low, t_high) · 목록(man) · 위험 모형(risk, high) · 보기 사진(samples, paths, truth).
+    실행 중에 쌓이는 것: session(판정 기록), confirm(작업자 확정), checks(자가 점검 결과), seq(판정 순번).
+    """
+    lock = threading.Lock()                      # session · confirm · seq 를 여러 요청 스레드가 함께 고치므로 잠근다
     gpu = ThreadPoolExecutor(max_workers=1)      # 추론 전용 스레드 하나. 요청마다 새 스레드에서 추론하면 GPU 준비가 매번 붙어 한 장에 60ms 가 더 든다
-    session, confirm, checks, seq = {}, {}, [], 0
-    watch = None
+    session, confirm, checks, seq = {}, {}, [], 0    # session · confirm 의 열쇠는 "묶음/사진" 문자열 (remember 참고)
+    watch = None                                 # 감시 폴더 경로. 감시를 켜지 않으면 None
 
 
 def png_url(arr):
+    """배열(회색 또는 RGBA, uint8)을 PNG 로 바꿔 data URL 문자열로 돌려준다. 화면이 파일 없이 바로 그릴 수 있다."""
     buf = io.BytesIO()
     Image.fromarray(arr).save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 def setup(name, watch=None):
+    """서버를 열기 전에 한 번 부른다. 모델 · 기준선 · 위험 모형 · 보기 사진 목록을 State 에 채운다.
+
+    name  : 모델 이름 (runs/<name> 의 가중치와 results/yolo_<name> 의 기준선을 쓴다)
+    watch : 감시할 폴더 경로. 주면 감시 스레드를 띄운다
+    """
     from ultralytics import YOLO
 
     S = State
     S.name = name
+    # 기준선과 보장 문구는 제출에 쓴 보장 기준선(risk_threshold 의 채택값)을 그대로 읽는다
     S.data = ROOT / yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))["out_dir"]
     th = json.load(open(ROOT / "results/risk_threshold/summary.json", encoding="utf-8"))["채택"]
     S.t_low, S.t_high, S.guarantee = th["합격선"], th["불합격선"], th["보장"]
     S.man = pd.read_csv(S.data / "manifest.csv").set_index("id")
     S.model = YOLO(str(weights_path(name)))
+    # 놓침 모형과 고위험 기준값(val 사진 제품 화소 위험의 상위 20%). 주변 결 등급의 경계는 miss_risk 결과에서 읽는다
     S.risk, _, S.high, _ = fit_risk(S.data, S.man, S.t_low, name)
     S.tex_q = json.load(open(ROOT / "results/miss_risk/summary.json", encoding="utf-8"))["주변결_등급기준(고리, val 3분위)"]
 
+    # 보기 사진: 정답이 있는 test 분할만 쓴다 (학습에 쓰지 않은 사진)
+    #   samples[묶음] = [{id, machine}], paths[(묶음, id)] = 파일 경로, truth[(묶음, id)] = 정답 박스 [x0, y0, x1, y1] 목록
     test = S.man[S.man["labeled"] & (S.man["split"] == "test")]
     S.samples = {"ng": [], "ok": [], "faint": [], "watch": []}
     S.paths, S.truth = {}, {}
-    for i, r in test.iterrows():
+    for i, r in test.iterrows():                         # 같은 id 로 실제 불량(정제본)과 정상(이물 점을 지운 것) 두 묶음을 만든다
         S.samples["ng"].append(dict(id=i, machine=int(r.machine)))
         S.samples["ok"].append(dict(id=i, machine=int(r.machine)))
         S.paths[("ng", i)] = S.data / "clean/images" / f"{i}.png"
         S.paths[("ok", i)] = S.data / "normal/test" / f"{i}.png"
         S.truth[("ng", i)] = M.load_gt([i], S.data / "clean/labels", {i: (r.w, r.h)})[i].tolist()
         S.truth[("ok", i)] = []
+    # 옅은 이물 묶음: 이식 시험편(paste_eval.py) 가운데 사진마다 첫 변형(__t00)만 보인다. 평가셋이 없으면 묶음이 빈다
+    # 정답 = 원본 사진의 실제 이물 박스 + 옮겨 붙인 자리(중심 ±5px)
     pf = S.data / "paste_test/defects.csv"
     if pf.exists():
         d = pd.read_csv(pf)
@@ -110,17 +128,21 @@ def setup(name, watch=None):
     try:
         spec = pd.read_csv(ROOT / f"results/testpiece_val_{name}/spec.csv")
         spec = spec[(spec["model"] == "YOLO") & (spec["d"] == CHECK_D)].set_index("machine")["min_c0"]
+        # c0 = 호기별 시험편 진하기, thr = 박스 기준선(val F1 최대), lcl = 경보 하한(개), base = 평상시 검출률
+        # 경보 하한은 monitor.py 가 요약에 적어 둔 규칙 문장("... 잡은 수 < N ...")에서 숫자만 꺼낸다
         mon = json.load(open(ROOT / "results/monitor/summary.json", encoding="utf-8"))
         thr = json.load(open(ROOT / f"results/yolo_{name}/metrics.json", encoding="utf-8"))["thresholds"]["F1최대"]
         S.check = dict(c0={int(m): float(v) for m, v in spec.items() if pd.notna(v)}, thr=float(thr),
                        lcl=int(re.search(r"< (\d+)", mon["경보_규칙"]).group(1)), base=float(mon["열화전_시험편_검출률"]))
     except Exception as e:                                # 사양표 · 상시 점검 결과가 없으면 자가 점검만 끈다
         print("자가 점검 끔:", e, flush=True)
+    # 교대 보고서에 나란히 적을 호기별 기준값 (process_signal.py 의 기준 구간). 결과 파일이 없으면 비워 둔다
+    #   per = 이물이 검출된 사진 한 장당 이물 수, off = 띠 밖 이물 비율
     base = json.load(open(ROOT / "results/process_signal/summary.json", encoding="utf-8"))["호기별"] \
         if (ROOT / "results/process_signal/summary.json").exists() else {}
     S.base = {int(m): dict(per=v["기준_이물_사진당"], off=v["기준_띠밖_비율"]) for m, v in base.items()}
-    S.started = datetime.now()
-    if watch:
+    S.started = datetime.now()                          # 교대 보고서의 시작 시각
+    if watch:                                           # 감시는 서버가 꺼질 때 같이 끝나도록 데몬 스레드로 돌린다
         S.watch = Path(watch).resolve()
         S.watch.mkdir(parents=True, exist_ok=True)
         threading.Thread(target=watch_loop, daemon=True).start()
@@ -129,6 +151,10 @@ def setup(name, watch=None):
 
 
 def guess_machine(w, h, name=""):
+    """호기 번호(1~3)를 짐작한다. 파일 이름이 m1_ · m2_ · m3_ 으로 시작하면 그 번호, 아니면 사진 너비(px)로 가른다.
+
+    너비 500 초과 → 3호기, 330 초과 → 1호기, 그 밖 → 2호기. h 는 쓰지 않는다.
+    """
     m = re.match(r"m([123])_", name)
     return int(m.group(1)) if m else 3 if w > 500 else 1 if w > 330 else 2
 
@@ -138,21 +164,35 @@ def load_gray(src):
     rgb = np.asarray(Image.open(src).convert("RGB"))
     gray = np.asarray(Image.fromarray(rgb).convert("L"))
     mask = color_mask(rgb)
-    if mask.any():
+    if mask.any():                                      # 복원에 쓰는 난수를 고정해 같은 사진은 늘 같은 결과가 나오게 한다
         gray = restore(gray, mask, np.random.default_rng(0))
     return gray, bool(mask.any())
 
 
 def predict(gray, conf):
-    """회색 영상 한 장을 추론 전용 스레드에서 추론한다 (한 번에 한 장)."""
+    """회색 영상 한 장을 추론 전용 스레드에서 추론한다 (한 번에 한 장).
+
+    conf 는 이 점수 미만의 박스를 버리는 하한이다. ultralytics 결과 객체 하나를 돌려준다 (boxes.xyxy, boxes.conf).
+    """
     return State.gpu.submit(lambda: State.model.predict(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), imgsz=640, conf=conf, max_det=100,
                                                         verbose=False)[0]).result()
 
 
 def inspect(gray, machine, truth=None, cleaned=False):
+    """사진 한 장의 판정과 화면에 보일 설명을 만든다.
+
+    gray : 회색 영상(uint8), machine : 호기 번호, truth : 정답 박스 목록(없으면 None), cleaned : 색 표시를 지웠는지.
+    반환 사전의 키
+      w, h, machine, top(최고 점수), t_low, t_high, verdict(합격 · 재검사 · 불합격), truth, cleaned
+      boxes : 합격선 이상 신호, 점수 높은 순. x0 y0 x1 y1 score verdict band(띠 안인지) edge(가장자리까지 px)
+              texture(주변 결 등급) u v(제품 외곽 상자 기준 0~1 자리)
+      weak  : 약한 신호(WEAK 이상 합격선 미만) 가운데 점수 높은 다섯 개. x0 y0 x1 y1 score
+      image, risk : 사진과 고위험 구역 덧칠의 PNG data URL,  risk_area : 제품 화소 가운데 고위험 구역 비율
+      ms : 걸린 시간(ms). infer = 추론, explain = 자리 설명과 위험 지도
+    """
     S = State
     t0 = time.perf_counter()
-    res = predict(gray, 0.001)
+    res = predict(gray, 0.001)                            # 점수가 낮은 박스까지 모두 받아 두고 아래에서 기준선으로 가른다
     t1 = time.perf_counter()
     xyxy, conf = res.boxes.xyxy.cpu().numpy(), res.boxes.conf.cpu().numpy()
     top = float(conf.max()) if len(conf) else 0.0
@@ -161,6 +201,7 @@ def inspect(gray, machine, truth=None, cleaned=False):
     ys, xs = np.nonzero(I["pm"])                          # 제품 외곽 상자: 신호 자리를 제품 기준 비율로 적는다 (교대 보고서의 누적 지도)
     px0, px1, py0, py1 = (xs.min(), xs.max() + 1, ys.min(), ys.max() + 1) if len(xs) else (0, w, 0, h)
     boxes = []
+    # 합격선 이상 박스마다 박스 중심 화소에서 자리의 성질(띠 · 가장자리 거리 · 주변 결)을 읽는다
     for (x0, y0, x1, y1), s in sorted(zip(xyxy[conf >= S.t_low], conf[conf >= S.t_low]), key=lambda b: -b[1]):
         cx, cy = int(np.clip((x0 + x1) / 2, 0, w - 1)), int(np.clip((y0 + y1) / 2, 0, h - 1))
         t = ring_texture(I, cx, cy)
@@ -169,14 +210,16 @@ def inspect(gray, machine, truth=None, cleaned=False):
                           edge=round(float(I["dist"][cy, cx]), 1),
                           texture="매끈" if t < S.tex_q[0] else "중간" if t < S.tex_q[1] else "거침",
                           u=round(float((cx - px0) / max(1, px1 - px0)), 3), v=round(float((cy - py0) / max(1, py1 - py0)), 3)))
+    # 약한 신호: 합격선에는 못 미치지만 WEAK 이상인 박스. 합격 제품의 2순위 확인 표시에 쓴다
     wk = (conf >= WEAK) & (conf < S.t_low)
     weak = [dict(x0=float(x0), y0=float(y0), x1=float(x1), y1=float(y1), score=round(float(s), 3))
             for (x0, y0, x1, y1), s in sorted(zip(xyxy[wk], conf[wk]), key=lambda b: -b[1])[:5]]
+    # 놓침 위험 지도: 제품 안 화소마다 기준 이물의 놓침 확률 (제품 밖은 NaN). 고위험 기준값 이상인 화소만 칠한다
     r = risk_map(S.risk, I, machine)
     ok = ~np.isnan(r)
     hi = np.nan_to_num(r) >= S.high
-    over = np.zeros((h, w, 4), np.uint8)
-    over[hi] = (*RISK_RGB, 120)
+    over = np.zeros((h, w, 4), np.uint8)                  # 투명 바탕의 RGBA 덧칠. 화면이 사진 위에 겹쳐 그린다
+    over[hi] = (*RISK_RGB, 120)                           # 불투명도 120/255
     t2 = time.perf_counter()
     return dict(w=w, h=h, machine=machine, top=round(top, 3), t_low=S.t_low, t_high=S.t_high,
                 verdict="불합격" if top >= S.t_high else "재검사" if top >= S.t_low else "합격",
@@ -186,7 +229,11 @@ def inspect(gray, machine, truth=None, cleaned=False):
 
 
 def remember(kind, pid, res):
-    """이번 실행에서 판정한 제품을 적어 둔다 (집계 · 대기 목록 · 교대 보고서의 근거). 같은 사진은 한 번만."""
+    """이번 실행에서 판정한 제품을 적어 둔다 (집계 · 대기 목록 · 교대 보고서의 근거). 같은 사진은 한 번만.
+
+    kind : 묶음 이름, pid : 사진 id, res : inspect() 의 반환값. 기록의 열쇠 "묶음/사진" 을 돌려준다.
+    기록 한 건: seq(판정 순번) kind id machine verdict top n(신호 수) weak(약한 신호 수) infer(ms) boxes(자리 정보만) time.
+    """
     S = State
     key = f"{kind}/{pid}"
     with S.lock:
@@ -202,24 +249,24 @@ def remember(kind, pid, res):
 def watch_loop():
     """감시 폴더에 새로 들어온 사진을 판정해 '들어온 사진' 묶음에 올린다. 쓰는 중인 파일은 크기가 멈춘 뒤에 읽는다."""
     S = State
-    seen, size = set(), {}
+    seen, size = set(), {}                                # seen = 이미 판정한 파일 이름, size = 지난번에 본 파일 크기
     while True:
         for p in sorted(S.watch.iterdir(), key=lambda f: f.stat().st_mtime):
             if p.suffix.lower() not in IMG_EXT or p.name in seen:
                 continue
             n = p.stat().st_size
-            if size.get(p.name) != n:
+            if size.get(p.name) != n:                     # 크기가 지난번과 다르면 아직 쓰는 중으로 보고 다음 바퀴(1초 뒤)에 다시 본다
                 size[p.name] = n
                 continue
             try:
                 gray, cleaned = load_gray(p)
-            except Exception:
+            except Exception:                             # 읽지 못한 파일은 건너뛴다. seen 에 넣지 않으므로 다음 바퀴에 다시 시도한다
                 continue
             seen.add(p.name)
             h, w = gray.shape
             machine = guess_machine(w, h, p.name)
             S.paths[("watch", p.name)] = p
-            S.truth[("watch", p.name)] = None
+            S.truth[("watch", p.name)] = None             # 들어온 사진은 정답이 없다
             res = inspect(gray, machine, None, cleaned)
             S.samples["watch"].append(dict(id=p.name, machine=machine))
             remember("watch", p.name, res)
@@ -230,17 +277,21 @@ def self_check(level=0.0):
     """정상 사진 CHECK_N 장의 어두운 띠 안에 사양 진하기의 가상 시험편을 하나씩 넣고 잡는지 본다.
 
     시험편 · 채점 기준선 · 경보 하한은 상시 점검(monitor.py)과 같다. level > 0 이면 흐림 · 잡음을 건 모의 열화 조건이다.
+    level 은 0~1 이고 1 이 monitor.py 의 가장 심한 열화다.
+    반환 사전: time n hits(잡은 수) lcl(경보 하한) base(평상시 검출률) level ok(hits >= lcl) sec(걸린 초)
+               pieces = 시험편별 [{machine, c0, hit}]. pieces 를 뺀 나머지는 State.checks 에도 쌓는다.
     """
     S, C = State, State.check
-    rng = np.random.default_rng()
+    rng = np.random.default_rng()                         # 시드를 주지 않는다. 점검할 때마다 사진과 자리가 달라진다
     pick = rng.choice(len(S.samples["ok"]), CHECK_N, replace=False)
     pieces, t0 = [], time.perf_counter()
     for k in pick:
         s = S.samples["ok"][int(k)]
         g = np.asarray(Image.open(S.paths[("ok", s["id"])]).convert("L"))
         I = Img.from_array(g)
-        ys, xs = np.nonzero(I["band"] & (I["pm"] > 0))
+        ys, xs = np.nonzero(I["band"] & (I["pm"] > 0))    # 제품 안 어두운 띠의 화소 가운데 한 곳을 고른다
         j = rng.integers(len(xs))
+        # 화소 안에서 소수점 자리까지 무작위로 둔다. 그 호기의 사양값이 없으면 진하기 0.30 을 쓴다
         cx, cy, c0 = xs[j] + rng.random(), ys[j] + rng.random(), C["c0"].get(s["machine"], 0.30)
         f = g.astype(np.float32)
         insert(f, cx, cy, CHECK_D, c0)
@@ -249,6 +300,7 @@ def self_check(level=0.0):
         g2 = np.clip(f.round(), 0, 255).astype(np.uint8)
         r = predict(g2, C["thr"])
         b = r.boxes.xyxy.cpu().numpy()
+        # 검출 = 기준선 이상 박스의 중심이 시험편 중심에서 CHECK_NEAR px 안에 하나라도 있음
         hit = bool(len(b) and (np.hypot((b[:, 0] + b[:, 2]) / 2 - cx, (b[:, 1] + b[:, 3]) / 2 - cy) <= CHECK_NEAR).any())
         pieces.append(dict(machine=s["machine"], c0=c0, hit=hit))
     hits = sum(p["hit"] for p in pieces)
@@ -259,22 +311,32 @@ def self_check(level=0.0):
 
 
 def report():
-    """이번 실행에서 판정한 묶음의 요약. 화면의 교대 보고서가 이것을 그린다."""
+    """이번 실행에서 판정한 묶음의 요약. 화면의 교대 보고서가 이것을 그린다.
+
+    반환 사전의 키
+      started, now, model, t_low, t_high, watch(감시 폴더 이름 또는 None)
+      n ok hold ng : 검사 수와 판정별 수,  weak : 합격 가운데 약한 신호가 있는 제품 수,  infer : 추론 시간 중앙값(ms)
+      machines : 호기별 [{machine, n, hold(사람이 볼 제품 수), signals(신호 수), per(신호 있는 제품당 신호 수),
+                 off(띠 밖 신호 비율), base(process_signal 기준값)}]
+      signals band(띠 안 비율) edge(가장자리 거리 중앙값 px) texture(결 등급별 수) points([호기, u, v] 목록)
+      confirm : {target(사람이 볼 제품 수), done(그중 확정한 수), yes(이물), no(정상)},  checks : 최근 자가 점검 다섯 건
+    """
     S = State
-    with S.lock:
+    with S.lock:                                          # 집계하는 동안 기록이 바뀌지 않도록 사본을 떠서 쓴다
         rec, conf = list(S.session.values()), dict(S.confirm)
     n = len(rec)
-    by = lambda v: sum(r["verdict"] == v for r in rec)
-    boxes = [dict(b, machine=r["machine"]) for r in rec for b in r["boxes"]]
+    by = lambda v: sum(r["verdict"] == v for r in rec)    # 판정이 v 인 제품 수
+    boxes = [dict(b, machine=r["machine"]) for r in rec for b in r["boxes"]]   # 모든 제품의 신호를 한 줄로 펴고 호기를 붙인다
     machines = []
     for m in sorted({r["machine"] for r in rec}):
         rm = [r for r in rec if r["machine"] == m]
-        sig = [r for r in rm if r["n"]]
+        sig = [r for r in rm if r["n"]]                   # 신호가 하나라도 있는 제품. per 의 분모 (process_signal 의 이물_사진당과 같은 정의)
         bm = [b for b in boxes if b["machine"] == m]
         machines.append(dict(machine=m, n=len(rm), hold=sum(r["verdict"] != "합격" for r in rm), signals=len(bm),
                              per=round(len(bm) / len(sig), 2) if sig else None,
                              off=round(sum(not b["band"] for b in bm) / len(bm), 3) if bm else None,
                              base=S.base.get(m)))
+    # 사람이 볼 제품 = 합격이 아니거나, 합격이어도 약한 신호가 있는 것
     target = [f'{r["kind"]}/{r["id"]}' for r in rec if r["verdict"] != "합격" or r["weak"]]
     done = {k: v for k, v in conf.items() if k in S.session}
     tex = {t: sum(b["texture"] == t for b in boxes) for t in ("매끈", "중간", "거침")}
@@ -292,10 +354,14 @@ def report():
 
 
 class Handler(BaseHTTPRequestHandler):
+    """화면(demo/index.html)과 /api/... 요청을 처리한다. 요청마다 스레드가 따로 돈다 (ThreadingHTTPServer)."""
+
     def log_message(self, *a):
+        """요청마다 찍히는 접속 기록을 끈다."""
         pass
 
     def send(self, body, ctype="application/json; charset=utf-8", code=200):
+        """응답을 보낸다. body 가 bytes 가 아니면 JSON 으로 바꾼다. 늘 새 결과를 받도록 캐시를 끈다."""
         if not isinstance(body, bytes):
             body = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -306,9 +372,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        """GET 요청.
+
+        /              화면 파일
+        /api/info      모델 · 기준선 · 묶음별 사진 목록 (화면이 처음 한 번 읽는다)
+        /api/session   판정 기록과 확정 내용 (since 보다 뒤의 것만)
+        /api/report    교대 보고서 자료
+        /api/selfcheck 자가 점검 실행 (level 0~1)
+        /api/thumb     목록에 보일 사진 파일
+        /api/inspect   사진 한 장 판정 (kind, id. light 를 주면 그림 없이)
+        """
         S = State
         u = urlparse(self.path)
-        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}   # 같은 이름이 여러 번 와도 첫 값만 쓴다
         if u.path == "/":
             return self.send((ROOT / "demo" / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/api/info":
@@ -333,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             if key not in S.paths:
                 return self.send({"error": "없는 사진"}, code=404)
             machine = next(s["machine"] for s in S.samples[key[0]] if s["id"] == key[1])
-            if key[0] == "watch":
+            if key[0] == "watch":                   # 들어온 사진은 색 표시가 있을 수 있어 지우고 읽는다. 보기 사진은 이미 정제본이다
                 gray, cleaned = load_gray(S.paths[key])
             else:
                 gray, cleaned = np.asarray(Image.open(S.paths[key]).convert("L")), False
@@ -345,6 +421,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send({"error": "없는 주소"}, code=404)
 
     def do_POST(self):
+        """POST 요청.
+
+        /api/confirm  작업자 확정을 기록한다 (kind, id, decision)
+        /api/upload   본문으로 받은 사진 한 장을 판정한다 (name, machine). 판정 기록에는 남기지 않는다
+        """
         S = State
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -359,9 +440,10 @@ class Handler(BaseHTTPRequestHandler):
                     S.confirm.pop(key, None)
                 else:
                     S.confirm[key] = dec
+                # 확정 기록은 지우지 않고 뒤에 덧붙인다. 취소도 한 줄로 남는다
                 LOG.mkdir(parents=True, exist_ok=True)
                 f = LOG / "confirm.csv"
-                new = not f.exists()
+                new = not f.exists()                    # 새 파일이면 첫 줄에 열 이름을 쓴다
                 with open(f, "a", newline="", encoding="utf-8-sig") as fp:
                     wr = csv.writer(fp)
                     if new:
@@ -377,11 +459,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({"error": "사진을 읽을 수 없습니다"}, code=400)
         h, w = gray.shape
         name = unquote(q.get("name", "올린 사진"))
+        # 호기는 화면에서 고른 값을 쓰고, 고르지 않았으면 파일 이름과 너비로 짐작한다
         machine = int(q["machine"]) if q.get("machine") in ("1", "2", "3") else guess_machine(w, h, name)
         self.send(dict(id=name, kind="upload", **inspect(gray, machine, None, cleaned)))
 
 
 def main():
+    """인자를 읽고 준비(setup)를 마친 뒤 서버를 연다. 이 PC 에서만 접속할 수 있다 (127.0.0.1)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--yolo", default=None, help="모델 이름 (기본: configs/pipeline.yaml 의 최종 모델)")
     ap.add_argument("--port", type=int, default=8765)

@@ -42,50 +42,72 @@ R = 4                        # 조각 반폭 (9×9)
 S_RANGE = (0.15, 1.0)        # 이식 세기
 MIN_DEPTH = 0.05             # 이보다 옅게 잘린 점은 은행에서 뺀다 (지우기 실패)
 SEED_OFFSET = 15485863       # 다른 합성 스크립트와 겹치지 않게
+# --mode 별로 섞는 이물 종류. 구 = synth.insert 합성, 이식 = 지운 배경 기준 조각, 기준이식 = 인접 프레임 기준 조각
 KINDS = {"paste": ["이식"], "mix": ["구", "이식"], "ref": ["기준이식"], "all3": ["구", "이식", "기준이식"]}
 TOPK = 8                     # 구조 맞춤 자리: 비용이 낮은 후보 TOPK 곳 가운데 무작위 (학습 사진마다 자리가 달라지게)
 
 
 def build_bank(data, rows, seed):
-    """{호기: [(사진 id, T 조각 9×9)]}. rows = manifest 의 해당 분할 행."""
+    """{호기: [(사진 id, T 조각 9×9)]}. rows = manifest 의 해당 분할 행.
+
+    data: 전처리 결과 폴더, seed: configs/data.yaml 의 시드 (지운 배경을 만들 때 쓴다).
+    T 조각은 float32 투과율로, 점 영역 밖은 1 · 점 영역은 0.02~1 이다. 호기 번호는 int 로 바꿔 열쇠로 쓴다.
+    """
     bank = {}
     for r in tqdm(list(rows.itertuples()), desc="점 은행"):
         g = np.asarray(Image.open(data / "clean/images" / f"{r.id}.png"))
         h, w = g.shape
+        # dot_centers 는 픽셀 경계 기준 좌표(한가운데가 k+0.5)를 주고, dot_mask 는 한가운데가 정수인 좌표를 받으므로 0.5 를 뺀다
         cs = dot_centers(g, np.loadtxt(data / "clean/labels" / f"{r.id}.txt", ndmin=2), w, h)
         masks = [dot_mask(g, cx - 0.5, cy - 0.5) for cx, cy in cs]
+        # 한 사진의 이물 점을 모두 합쳐 한 번에 지운다. er = 이물만 지운 배경
         union = np.zeros_like(g)
         for m in masks:
             union |= m
         er = restore(g, union, np.random.default_rng([seed + SEED_OFFSET, int(r.sha1[:8], 16)])).astype(np.float32)
         for (cx, cy), m in zip(cs, masks):
             x, y = int(round(cx - 0.5)), int(round(cy - 0.5))
+            # 9×9 조각이 영상 밖으로 나가는 점은 은행에 넣지 않는다
             if x - R < 0 or y - R < 0 or x + R + 1 > w or y + R + 1 > h:
                 continue
             sl = (slice(y - R, y + R + 1), slice(x - R, x + R + 1))
+            # 투과율 = 실제 / 지운 배경. 이 점의 마스크 밖은 1 이라 옮겨 붙여도 그 자리는 바뀌지 않는다 (0 으로 나누지 않게 분모는 1 이상)
             T = np.where(m[sl] > 0, g[sl].astype(np.float32) / np.maximum(er[sl], 1), 1.0)
+            # 1 을 넘는 값(지운 배경보다 밝은 픽셀)은 1 로, 0.02 아래는 0.02 로 자른다
             T = np.clip(T, 0.02, 1.0)
+            # 가장 어두운 픽셀의 깊이(1 - 최소 투과율)가 MIN_DEPTH 이상인 점만 쓴다
             if 1 - T.min() >= MIN_DEPTH:
                 bank.setdefault(int(r.machine), []).append((r.id, T))
     return bank
 
 
 def paste(f, x, y, T, s, rng):
-    """f(float32)의 (x, y) 화소 중심에 점 조각을 세기 s 로 곱해 넣는다. 영상 밖으로 나가면 False."""
+    """f(float32)의 (x, y) 화소 중심에 점 조각을 세기 s 로 곱해 넣는다. 영상 밖으로 나가면 False.
+
+    x, y: 조각 한가운데가 놓일 픽셀의 정수 좌표, T: (9, 9) 투과율 조각, s: 세기(T 의 지수).
+    f 를 제자리에서 고친다. 넣었으면 True.
+    """
     h, w = f.shape
     if x - R < 0 or y - R < 0 or x + R + 1 > w or y + R + 1 > h:
         return False
+    # 좌우 뒤집기, 상하 뒤집기, 대각 뒤집기(전치)를 각각 절반 확률로 해서 8가지 방향이 나온다
     if rng.random() < 0.5:
         T = T[:, ::-1]
     if rng.random() < 0.5:
         T = T[::-1]
     if rng.random() < 0.5:
         T = T.T
+    # 두께가 s 배면 exp(-μ·s·t) = T^s 이므로 세기는 지수로 준다
     f[y - R:y + R + 1, x - R:x + R + 1] *= T ** s
     return True
 
 
 def main():
+    """train 영상마다 이식(또는 혼합) 증강 영상을 만들고 학습 목록·데이터셋 yaml 을 쓴다.
+
+    defects.csv 는 넣은 이물별 img, src, machine, cx, cy(px), in_band, kind(구/이식/기준이식), d, c0(구만), s(이식만), donor(조각을 떼어 온 사진 id).
+    인접 프레임 이식을 쓰는 모드는 찾은 기준 프레임 목록을 references.csv 로도 남긴다.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="paste", choices=list(KINDS))
     ap.add_argument("--placement", default="random", choices=["random", "context"])
@@ -100,9 +122,11 @@ def main():
     (out / "labels").mkdir(parents=True, exist_ok=True)
     man = pd.read_csv(data / "manifest.csv")
     tr = man[man["labeled"] & (man["split"] == "train")]
+    # 은행은 쓰는 종류만 만든다. bank = 지운 배경 기준 조각, ref_bank = 인접 프레임 기준 조각 (둘 다 호기별)
     bank = build_bank(data, tr, cfg["seed"]) if "이식" in kinds else {}
     ref_bank, refs = RR.build_ref_bank(data, tr) if "기준이식" in kinds else ({}, [])
 
+    # skipped = 조각이 없거나 놓을 자리가 없어 넣지 못한 이물 수 (config.json 의 n_skipped)
     rows, paths, skipped = [], [], 0
     for r in tqdm(list(tr.itertuples()), desc="이식 증강"):
         g = np.asarray(Image.open(data / "clean/images" / f"{r.id}.png"))
@@ -110,6 +134,7 @@ def main():
         real = np.loadtxt(data / "clean/labels" / f"{r.id}.txt", ndmin=2)
         pm = product_mask(g)
         band = band_mask(g, pm)
+        # 실제 이물 박스와 그 둘레 10px 에는 넣지 않는다. real_xyxy 는 구조 맞춤 자리 고르기에 넘길 실제 박스(px)
         forbid = np.zeros_like(pm)
         real_xyxy = []
         for b in real:
@@ -118,16 +143,20 @@ def main():
             forbid[max(0, int(cy - bh / 2 - 10)):int(cy + bh / 2 + 10),
                    max(0, int(cx - bw / 2 - 10)):int(cx + bw / 2 + 10)] = 1
         cand = {"band": np.argwhere(band & (forbid == 0)), "any": np.argwhere((pm > 0) & (forbid == 0))}
+        # 조각은 같은 호기의 다른 사진에서만 가져온다 (자기 사진의 점은 뺀다)
         donors = [d for d in bank.get(int(r.machine), []) if d[0] != r.id]
         ref_donors = [d for d in ref_bank.get(int(r.machine), []) if d["id"] != r.id]
+        # 구조 맞춤 자리 고르기는 사진마다 한 번 준비해 변형들이 함께 쓴다
         picker = RR.ContextPicker(g, pm) if (args.placement == "context" and ref_donors) else None
         for v in range(args.variants):
             rng = np.random.default_rng([cfg["seed"] + SEED_OFFSET, int(r.sha1[:8], 16), v])
             f = g.astype(np.float32)
             placed, labels = [], [tuple(b) for b in real]
+            # 파일 이름 꼬리: paste · mix 는 p, 그 밖은 모드 이름 첫 글자 (ref → r, all3 → a) + 변형 번호
             sid = f"{r.id}__{'p' if args.mode in ('paste', 'mix') else args.mode[0]}{v}"
             for _ in range(rng.integers(A.N_RANGE[0], A.N_RANGE[1] + 1)):
                 pool = cand["band"] if (rng.random() < A.BAND_P and len(cand["band"])) else cand["any"]
+                # 먼저 넣은 이물과 24px 이상 떨어진 픽셀을 100번까지 뽑는다 (끝내 못 찾으면 마지막에 뽑은 자리를 쓴다)
                 for _try in range(100):
                     y, x = pool[rng.integers(len(pool))]
                     if all(np.hypot(x - px, y - py) >= 24 for px, py in placed):
@@ -143,6 +172,7 @@ def main():
                     aspect = rng.uniform(*A.ASPECT_RANGE) if shard else 1.0
                     angle = rng.uniform(0, np.pi)
                     insert(f, cx, cy, d, c0, aspect, angle)
+                    # 박스 크기 계산도 augment.py 와 같다 (모양이 차지하는 범위 + 여유, 최소 MIN_BOX)
                     ex = abs(d * aspect / 2 * np.cos(angle)) + abs(d / 2 * np.sin(angle))
                     ey = abs(d * aspect / 2 * np.sin(angle)) + abs(d / 2 * np.cos(angle))
                     bw, bh = max(A.MIN_BOX, 2 * ex + 6), max(A.MIN_BOX, 2 * ey + 6)
@@ -153,6 +183,7 @@ def main():
                     if not paste(f, int(x), int(y), T, s, rng):
                         skipped += 1
                         continue
+                    # 조각을 픽셀 (x, y) 한가운데에 놓았으므로 라벨 중심은 +0.5, 박스는 한 변 MIN_BOX 로 고정
                     cx, cy = x + 0.5, y + 0.5
                     bw = bh = A.MIN_BOX
                     info = dict(kind="이식", d=None, c0=None, s=s, donor=did)
@@ -162,8 +193,10 @@ def main():
                         continue
                     dn = ref_donors[rng.integers(len(ref_donors))]
                     s = rng.uniform(*S_RANGE)
+                    # 조각과 박스 크기는 떼어 낸 이물의 박스 크기(px) 그대로다. 기본은 뽑은 픽셀이 박스 가운데가 되게 놓는다
                     bw, bh = dn["bw"], dn["bh"]
                     x0, y0 = int(x) - bw // 2, int(y) - bh // 2
+                    # 구조 맞춤: 위에서 뽑은 자리 대신, 실제 박스와 먼저 넣은 이물(둘레 12px)을 피한 후보 중 비용이 낮은 TOPK 곳에서 고른다
                     if picker is not None:
                         taken = real_xyxy + [(px - 12, py - 12, px + 12, py + 12) for px, py in placed]
                         cs = picker.candidates(dn["desc"], bw, bh, taken)[:TOPK]
@@ -175,6 +208,7 @@ def main():
                         skipped += 1
                         continue
                     cx, cy = x0 + bw / 2, y0 + bh / 2
+                    # 실제로 놓인 자리로 x, y 를 다시 잡는다 (아래 거리 검사 목록과 띠 안 여부에 쓴다)
                     x, y = int(cx), int(cy)
                     info = dict(kind="기준이식", d=None, c0=None, s=s, donor=dn["id"])
                 labels.append((0, cx / w, cy / h, bw / w, bh / h))

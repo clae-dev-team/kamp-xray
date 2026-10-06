@@ -34,14 +34,20 @@ from judge import tiers
 from train_yolo import weights_path
 
 ROOT = Path(__file__).resolve().parents[1]
-WARMUP = 20
+WARMUP = 20          # 예열로 버리는 앞쪽 사진 수 (시간 통계에서만 뺀다. 판정 비교에는 모든 사진을 쓴다)
 
 
 def run(model, paths, device, half):
-    """한 장씩 추론. 반환: 사진별 (최고 점수, 박스들), 시간 표."""
+    """한 장씩 추론. 반환: 사진별 (최고 점수, 박스들), 시간 표.
+
+    device : 0(GPU) 또는 "cpu", half : 반정밀도(FP16)로 돌릴지.
+    반환 셋: 최고 점수 배열(박스가 없으면 0), 사진별 (N, 5) 배열 [x0, y0, x1, y1, 점수] 의 목록,
+             예열 뒤 사진의 시간 표(열 전처리 · 추론 · 후처리 · 전체, ms).
+"""
     tops, boxes, rows = [], [], []
     for k, p in enumerate([str(x) for x in paths]):
         t0 = time.perf_counter()
+        # 파일 경로를 그대로 넘겨 파일 읽기까지 시간에 넣는다. 결과를 CPU 로 옮기는 데까지를 한 장 전체 시간으로 잰다
         r = model.predict(p, imgsz=640, conf=0.001, max_det=100, device=device, half=half, verbose=False)[0]
         c = r.boxes.conf.cpu().numpy()
         xyxy = r.boxes.xyxy.cpu().numpy()
@@ -54,6 +60,10 @@ def run(model, paths, device, half):
 
 
 def main():
+    """형식마다 변환 → 438장 추론 → 시간 통계와 판정 비교를 하고 summary.json · speed.csv 에 적는다.
+
+    처음으로 성공한 형식이 비교 기준이 된다 (건너뛰지 않으면 PyTorch FP32 GPU).
+"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--yolo", default="ratio3_e100")
     ap.add_argument("--skip", nargs="*", default=[], help="건너뛸 형식 이름")
@@ -73,18 +83,22 @@ def main():
 
     df = pd.read_csv(ROOT / "data/judge_test.csv")
     paths = df["path"].tolist()
+    # th = 사진 단위 3단 판정의 보장 기준선, thr_box = 박스 단위 채점의 기준선(val F1 최대)
     th = json.load(open(ROOT / "results/risk_threshold/summary.json", encoding="utf-8"))["채택"]
     thr_box = json.load(open(ROOT / f"results/yolo_{args.yolo}/metrics.json", encoding="utf-8"))["thresholds"]["F1최대"]
     man = pd.read_csv(ROOT / "data/manifest.csv").set_index("id")
-    real = df[df.kind == "real_ng"]
+    real = df[df.kind == "real_ng"]                     # 실제 불량 사진만 정답 박스가 있다
     gt = M.load_gt(real["img"].tolist(), ROOT / "data/clean/labels", {i: (man.w[i], man.h[i]) for i in real["img"]})
 
     def export(fmt, **kw):
+        """복사본 가중치를 fmt("onnx" 또는 "engine")로 변환하고 파일 경로를 돌려준다. 변환 파일이 이미 있으면 그대로 쓴다."""
         f = src.with_suffix({"onnx": ".onnx", "engine": ".engine"}[fmt])
         if not f.exists():
             f = YOLO(str(src)).export(format=fmt, imgsz=640, verbose=False, **kw)
         return str(f)
 
+    # (이름, 모델 파일을 얻는 함수, 장치, 반정밀도 여부). 파일을 얻는 데 걸린 시간이 변환 시간으로 기록된다
+    # ONNX (CPU) 는 따로 변환하지 않고 앞의 ONNX (GPU) 가 만든 파일을 쓴다
     forms = [("PyTorch FP32 (GPU)", lambda: str(src), 0, False),
              ("PyTorch FP16 (GPU)", lambda: str(src), 0, True),
              ("ONNX (GPU)", lambda: export("onnx", simplify=True), 0, False),
@@ -109,7 +123,8 @@ def main():
             res[name] = {"오류": f"{type(e).__name__}: {str(e)[:200]}"}
             print(name, "실패", e)
             continue
-        verdict = tiers(tops, th["합격선"], th["불합격선"])
+        verdict = tiers(tops, th["합격선"], th["불합격선"])      # 사진별 합격 · 재검사 · 불합격
+        # 실제 불량 사진의 박스만 모아 박스 기준선에서 채점한다 (찾은 실제 이물 수와 헛경보 수)
         pr = pd.DataFrame([(i, *b) for i, bb in zip(df["img"], bx) for b in bb if i in gt],
                           columns=["id", "x0", "y0", "x1", "y1", "score"])
         ev = M.evaluate(pr, gt, thr_box, "center")
@@ -120,7 +135,7 @@ def main():
              "전처리_ms_중앙": round(float(tm["전처리"].median()), 2), "후처리_ms_중앙": round(float(tm["후처리"].median()), 2),
              "초당_장수": round(1000 / float(tm["전체"].median()), 1),
              "실제이물_찾음": f"{ev['TP']}/{ev['n_gt']}", "실제사진_헛경보": ev["FP"]}
-        if ref is None:
+        if ref is None:                  # 첫 형식은 기준으로 삼고, 그 뒤 형식은 기준과 판정 · 최고 점수를 비교한다 (다른 사진은 열 장까지 적는다)
             ref = (tops, verdict)
             r["판정분포"] = pd.Series(verdict).value_counts().to_dict()
         else:
@@ -131,7 +146,7 @@ def main():
                                    기준점수=round(float(ref[0][i]), 4), 이형식점수=round(float(tops[i]), 4)) for i in diff[:10]]
         res[name] = r
         print(name, json.dumps({k: v for k, v in r.items() if k != "판정다른사진"}, ensure_ascii=False))
-        del model
+        del model                        # 다음 형식을 올리기 전에 GPU 메모리를 비운다
         torch.cuda.empty_cache()
 
     env = {"GPU": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "CPU": platform.processor(),
@@ -143,6 +158,7 @@ def main():
     except ImportError:
         pass
     json.dump({"환경": env, "형식": res}, open(out / "summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    # 표 파일은 형식마다 한 줄. 사전 · 목록으로 된 값은 JSON 문자열로 바꿔 한 칸에 넣는다
     pd.DataFrame([dict(형식=k, **{kk: (json.dumps(vv, ensure_ascii=False) if isinstance(vv, (dict, list)) else vv)
                                  for kk, vv in v.items()}) for k, v in res.items()]) \
         .to_csv(out / "speed.csv", index=False, encoding="utf-8-sig")

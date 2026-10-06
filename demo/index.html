@@ -286,23 +286,35 @@
 <dialog id="dlg-report"><div class="dlg rp" id="report"></div></dialog>
 
 <script>
+// id 로 요소를 찾는 줄임 함수
 const $ = id => document.getElementById(id);
+// 판정별 색
 const COLOR = { 합격: '#35c2a4', 재검사: '#f0a63c', 불합격: '#ef5b52' };
+// 화면 상태
+//   info = 서버 설정과 사진 목록, kind = 고른 탭, cur = 보고 있는 사진의 열쇠("묶음/사진"), res = 그 판정 결과
+//   sel = 고른 신호 번호, img · risk = 사진과 고위험 구역 그림
+//   seen · top · cnt = 열쇠별 판정 · 최고 점수 · 신호 수, conf = 열쇠별 작업자 확정
+//   seq = 서버에서 받아 온 마지막 판정 순번, show = 겹쳐 그릴 것(검출 위치 · 놓치기 쉬운 구역 · 정답 위치)
 const st = { info: null, kind: 'ng', cur: null, res: null, sel: 0, img: null, risk: null, seen: {}, top: {}, cnt: {}, conf: {}, seq: 0, show: { box: true, risk: false, truth: false } };
 
+// 사진 id(m호기_번호_날짜_시각(순번))를 목록에 보일 두 줄 글자로 바꾼다. t1 = 촬영 월일과 시각, t2 = 호기와 순번
+// 이 형식이 아닌 이름(올린 사진 · 감시 폴더 사진)은 이름을 그대로 보인다
 function label(id) {
   const m = id.match(/^m(\d)_\d+_(\d{4})(\d\d)(\d\d)_(\d\d)(\d\d)(\d\d)\((\d+)\)/);
   return m ? { t1: `${m[3]}월 ${m[4]}일 ${m[5]}:${m[6]}:${m[7]}`, t2: `${m[1]}호기 · ${m[8]}번` } : { t1: id, t2: '' };
 }
 
+// 처음 한 번 실행: 서버 설정을 읽어 탭과 단추를 만들고, 첫 사진을 판정해 보인 뒤 2초마다 서버 기록과 맞춘다
 async function init() {
   st.info = await (await fetch('/api/info')).json();
   $('model').textContent = `최종 모델 ${st.info.model} · 합격선 ${st.info.t_low.toFixed(2)} · 불합격선 ${st.info.t_high.toFixed(2)}`;
   $('guarantee').textContent = '기준선 보장: ' + st.info.guarantee;
+  // 탭은 사진이 있는 묶음만 만든다. '들어온 사진'은 폴더 감시가 켜져 있으면 비어 있어도 만들고, 끝에 '재검사 대기'를 붙인다
   $('tabs').innerHTML = Object.entries(st.info.kinds).filter(([k]) => st.info.samples[k].length || (k === 'watch' && st.info.watch))
     .map(([k, v]) => `<button role="tab" data-k="${k}">${v}</button>`).join('') + '<button role="tab" data-k="queue">재검사 대기</button>';
   $('runall').onclick = runAll;
   $('tabs').onclick = e => { if (e.target.dataset.k) { st.kind = e.target.dataset.k; rows(); } };
+  // 자가 점검 단추는 서버가 점검할 수 있을 때만 보인다. 누르면 칸 20개와 결과 글자를 비우고 창을 연다
   $('bt-check').hidden = !st.info.check;
   $('bt-check').onclick = () => { $('pieces').innerHTML = '<i></i>'.repeat(20); $('ck-result').innerHTML = '&nbsp;'; $('ck-result').className = 'result'; $('ck-note').innerHTML = '&nbsp;'; $('dlg-check').showModal(); };
   $('ck-close').onclick = () => $('dlg-check').close();
@@ -313,6 +325,7 @@ async function init() {
   drawScale();
   const first = st.info.samples[st.kind][0];
   if (first) pick(st.kind, first.id);
+  // 2초마다 서버 기록을 다시 받아, 바뀐 것이 있으면 목록을 다시 그린다 (폴더 감시로 들어온 사진이 이때 올라온다)
   setInterval(async () => { if (await sync()) rows(); }, 2000);
 }
 
@@ -321,6 +334,8 @@ async function sync() {
   const d = await (await fetch('/api/session?since=' + st.seq)).json();
   let changed = false;
   for (const r of d.records) {
+    // 감시 폴더로 새로 들어온 사진은 '들어온 사진' 목록에도 넣는다
+    // 서버 기록에는 신호의 개수만 있으므로, 길이만 가진 객체로 바꿔 record 에 넘긴다
     if (r.kind === 'watch' && !st.info.samples.watch.some(s => s.id === r.id)) st.info.samples.watch.push({ id: r.id, machine: r.machine });
     if (!st.seen[r.kind + '/' + r.id]) { record({ kind: r.kind, id: r.id, verdict: r.verdict, top: r.top, boxes: { length: r.n }, weak: { length: r.weak } }); changed = true; }
   }
@@ -333,7 +348,9 @@ async function sync() {
 // 재검사 대기의 우선순위: 1순위 = 재검사 구간(점수 높은 순, 같으면 신호가 많은 순),
 // 2순위 = 합격했지만 약한 신호(하한 이상)가 있는 제품(점수 높은 순). 불합격은 자동 배출이라 건수만 센다.
 function tiers() {
+  // 올린 사진은 대기 목록에 넣지 않는다
   const keys = Object.keys(st.seen).filter(k => !k.startsWith('upload/'));
+  // 열쇠 "묶음/사진" 을 첫 빗금에서 나눠 { kind, id } 로 되돌린다
   const obj = k => ({ kind: k.slice(0, k.indexOf('/')), id: k.slice(k.indexOf('/') + 1) });
   const order = (a, b) => (st.top[b] - st.top[a]) || (st.cnt[b] - st.cnt[a]);
   return {
@@ -344,16 +361,21 @@ function tiers() {
   };
 }
 
+// 지금 목록에 보일 항목. 묶음 탭이면 그 묶음의 사진 전부, '재검사 대기' 탭이면 1순위 뒤에 2순위를 잇는다
 function items() {
   if (st.kind !== 'queue') return st.info.samples[st.kind].map(s => ({ kind: st.kind, id: s.id }));
   const t = tiers();
   return [...t.t1, ...t.t2];
 }
 
+// 왼쪽 목록을 다시 그린다: 탭 선택 표시, 묶음 검사 단추, 사진 줄
 function rows() {
   [...$('tabs').children].forEach(b => b.setAttribute('aria-selected', b.dataset.k === st.kind));
   const list = items(), q = st.kind === 'queue';
+  // '이 묶음 모두 검사' 단추는 재검사 대기와 들어온 사진 탭에서는 숨긴다
   $('runall').style.display = q || st.kind === 'watch' ? 'none' : '';
+  // 한 줄의 HTML. 오른쪽 끝은 재검사 대기에서는 점수, 확정한 사진은 폐기 · 통과, 그 밖에는 판정 색 점이다
+  // 재검사 대기에서는 여러 묶음이 섞이므로 둘째 줄에 순번 대신 묶음 이름을 적는다
   const row = s => {
     const l = label(s.id), key = s.kind + '/' + s.id;
     return `<button class="row" data-kind="${s.kind}" data-id="${encodeURIComponent(s.id)}" aria-current="${st.cur === key}">
@@ -361,6 +383,7 @@ function rows() {
       <span><div class="t1">${l.t1}</div><div class="t2">${q ? l.t2.split(' · ')[0] + ' · ' + st.info.kinds[s.kind] : l.t2}</div></span>
       ${q ? `<span class="sc">${st.top[key].toFixed(2)}</span>` : st.conf[key] ? `<span class="ck ${st.conf[key]}">${st.conf[key] === '이물' ? '폐기' : '통과'}</span>` : `<span class="dot ${st.seen[key] || ''}"></span>`}</button>`;
   };
+  // 재검사 대기 탭은 1순위 · 2순위를 머리줄로 나누고, 자동 배출과 확정이 끝난 것은 건수만 보인다
   if (q) {
     const t = tiers();
     $('qinfo').textContent = list.length ? '점수 높은 순' : '검사한 사진 가운데 사람이 볼 것이 여기에 쌓입니다';
@@ -372,9 +395,11 @@ function rows() {
     $('qinfo').textContent = st.kind === 'watch' ? `폴더 감시 중 (${st.info.watch}) · ${list.length}장` : `${list.length}장`;
     $('rows').innerHTML = list.map(row).join('');
   }
+  // 줄을 누르면 그 사진을 판정해 보인다
   $('rows').onclick = e => { const r = e.target.closest('.row'); if (r) pick(r.dataset.kind, decodeURIComponent(r.dataset.id)); };
 }
 
+// 지금 탭의 사진을 차례로 모두 판정한다. 이미 판정한 사진은 건너뛰고, 그림 없이 판정만 받는다(light)
 async function runAll() {
   const kind = st.kind, list = st.info.samples[kind] || [];
   $('runall').disabled = true;
@@ -390,6 +415,7 @@ async function runAll() {
   rows();
 }
 
+// 판정 하나를 화면 상태에 적고 위쪽 집계 숫자를 고친다. 같은 사진은 한 번만 센다
 function record(res) {
   const key = res.kind + '/' + res.id;
   if (st.seen[key]) return;
@@ -398,13 +424,17 @@ function record(res) {
   for (const v of ['합격', '재검사', '불합격']) $('n-' + v).textContent = Object.values(st.seen).filter(x => x === v).length;
 }
 
+// 사진 하나를 골라 서버에 판정을 맡기고 결과를 보인다
 async function pick(kind, id) {
   st.cur = kind + '/' + id;
   const res = await (await fetch(`/api/inspect?kind=${kind}&id=${encodeURIComponent(id)}`)).json();
+  // 기다리는 사이에 다른 사진을 골랐으면 늦게 온 결과는 버린다
   if (st.cur !== kind + '/' + id) return;
   show(res);
 }
 
+// 판정 결과를 화면에 올린다: 사진과 구역 그림을 불러오고, 제목 · 오른쪽 설명 · 가운데 그림을 그린다
+// 정답 위치 단추는 정답이 있는 사진에서만 보인다
 async function show(res) {
   st.res = res; st.sel = 0;
   record(res);
@@ -417,6 +447,7 @@ async function show(res) {
   draw();
 }
 
+// 목록을 다시 만들지 않고, 지금 보는 줄의 표시와 판정 색 점만 고친다
 function rowsMark() {
   [...$('rows').querySelectorAll('.row')].forEach(r => {
     const key = r.dataset.kind + '/' + decodeURIComponent(r.dataset.id);
@@ -425,8 +456,10 @@ function rowsMark() {
   });
 }
 
+// 그림 주소를 Image 로 불러온다. 다 불러오면 그 Image 를 돌려주는 Promise
 const load = src => new Promise(ok => { const i = new Image(); i.onload = () => ok(i); i.src = src; });
 
+// 오른쪽 설명을 채운다: 판정과 이유, 확정 단추, 점수 눈금, 신호 표, 놓치기 쉬운 구역 비율, 처리 정보
 function panel() {
   const r = st.res, n = r.boxes.length;
   const v = $('verdict'); v.textContent = r.verdict; v.className = 'verdict ' + r.verdict;
@@ -438,12 +471,14 @@ function panel() {
       : `뚜렷한 이물 신호가 있습니다. 표시된 ${n}곳을 확인하고 폐기합니다.`;
   confirmBox();
   drawScale();
+  // 신호 표: 합격선 이상 신호를 한 줄씩 적는다. 없으면 약한 신호의 점수만 글로 적는다
   $('signals').innerHTML = n ? `<table><thead><tr><th></th><th>점수</th><th>판정</th><th style="padding-left:14px">자리</th></tr></thead><tbody>` +
     r.boxes.map((b, i) => `<tr class="sig" data-i="${i}" aria-selected="${i === st.sel}"><td class="no">${i + 1}</td><td class="sc">${b.score.toFixed(2)}</td>
       <td class="vd ${b.verdict}">${b.verdict}</td>
       <td class="at">${b.band ? '어두운 띠 안' : '띠 밖'} · 가장자리에서 ${Math.round(b.edge)}px · 주변 결 ${b.texture}</td></tr>`).join('') + '</tbody></table>'
     : (r.weak.length ? '<p class="none">합격선을 넘는 신호는 없습니다. 점선으로 표시한 약한 신호: '
         + r.weak.map(b => b.score.toFixed(2)).join(' · ') + '</p>' : '<p class="none">합격선을 넘는 신호가 없습니다.</p>');
+  // 표의 줄을 누르면 그 신호를 고르고 설명과 그림을 다시 그린다
   $('signals').onclick = e => { const t = e.target.closest('.sig'); if (t) { st.sel = +t.dataset.i; panel(); draw(); } };
   $('risk-n').innerHTML = `${(r.risk_area * 100).toFixed(0)}%<small>제품 면적 가운데</small>`;
   $('risk-bar').style.width = Math.min(100, r.risk_area * 100) + '%';
@@ -467,9 +502,11 @@ function confirmBox() {
   box.onclick = e => { const d = e.target.closest('button')?.dataset.d; if (d) confirmAs(d); };
 }
 
+// 작업자 확정을 서버에 보낸다. dec = 이물 | 정상 | 취소. 확정 단추가 보이는 사진에서만 받고, 이미 확정한 사진은 취소만 받는다
 async function confirmAs(dec) {
   const r = st.res;
   if (!r || $('confirm').hidden || (st.conf[st.cur] && dec !== '취소')) return;
+  // 확정하기 전의 목록 자리(at)를 기억해 둔다. 확정한 줄이 대기 목록에서 빠지면 그 자리에 올라온 제품을 연다
   const key = st.cur, before = items(), at = before.findIndex(s => s.kind + '/' + s.id === key);
   const res = await (await fetch(`/api/confirm?kind=${r.kind}&id=${encodeURIComponent(r.id)}&decision=${encodeURIComponent(dec)}`, { method: 'POST' })).json();
   if (res.error) return;
@@ -479,6 +516,7 @@ async function confirmAs(dec) {
   if (next) pick(next.kind, next.id); else confirmBox();
 }
 
+// 자가 점검을 실행하고 결과를 창에 그린다. 칸 하나가 시험편 하나이고 잡았으면 hit, 놓쳤으면 miss 로 칠한다
 async function selfCheck() {
   const run = $('ck-run'); run.disabled = true; run.textContent = '점검 중';
   $('pieces').innerHTML = '<i></i>'.repeat(20); $('ck-result').innerHTML = '&nbsp;'; $('ck-note').innerHTML = '&nbsp;';
@@ -492,8 +530,10 @@ async function selfCheck() {
     + (r.ok ? `평상시 검출률 ${(r.base * 100).toFixed(0)}% 기준으로 정상 범위입니다.` : '검출 수가 경보 하한 아래입니다. 한 번 더 점검해 같은 결과면 장비 상태와 모델을 확인하세요.') + ` (${r.sec}초)`;
 }
 
+// 교대 보고서를 서버에서 받아 창에 그린다. pct(a, b) = a / b 를 백분율 글자로 (b 가 0 이면 -)
 async function openReport() {
   const r = await (await fetch('/api/report')).json(), pct = (a, b) => b ? (a / b * 100).toFixed(1) + '%' : '-';
+  // 호기별 자리 그림: 제품 외곽 상자를 네모(92 × 66)로 그리고, 신호마다 상자 안 자리(u, v)에 점을 찍는다
   const maps = [1, 2, 3].map(m => {
     const pts = r.points.filter(p => p[0] === m);
     return `<figure><svg viewBox="0 0 120 90"><rect x="14" y="12" width="92" height="66" rx="9" fill="none" stroke="#3a474e" stroke-width="1"/>`
@@ -501,6 +541,7 @@ async function openReport() {
       + `</svg><figcaption>${m}호기 · 신호 ${pts.length}곳</figcaption></figure>`;
   }).join('');
   const c = r.confirm;
+  // 자가 점검 기록: 서버가 보낸 최근 다섯 건을 시각 · 잡은 수 · 결과로 적는다
   const checks = r.checks.length ? `<div class="kv">` + r.checks.map(k => `<span>${k.time}${k.level > 0 ? ' · 모의 열화' : ''}</span><b style="color:var(--${k.ok ? 'ok' : 'ng'})">${k.hits} / ${k.n} · ${k.ok ? '정상' : '점검 필요'}</b>`).join('') + `</div>`
     : `<p class="none">이번 교대에 실행한 자가 점검이 없습니다.</p>`;
   $('report').innerHTML = `
@@ -537,7 +578,9 @@ async function openReport() {
   $('dlg-report').showModal();
 }
 
+// 점수 눈금을 그린다. 0~1 을 가로로 펴고 합격 · 재검사 · 불합격 구간을 색 띠로, 기준선을 세로선으로, 신호 점수를 점으로 찍는다
 function drawScale() {
+  // x(s) = 점수 s 의 가로 자리. 양 끝에 4px 씩 여백을 둔다
   const W = 316, x = s => 4 + s * (W - 8), i = st.info, r = st.res;
   if (!i) return;
   let s = `<rect x="${x(0)}" y="26" width="${x(i.t_low) - x(0) - 1}" height="6" rx="3" fill="#35c2a4" opacity=".28"/>
@@ -546,6 +589,8 @@ function drawScale() {
   for (const [t, name, tx] of [[i.t_low, '합격선', x(i.t_low) - 6], [i.t_high, '불합격선', W - 2]])
     s += `<line x1="${x(t)}" x2="${x(t)}" y1="18" y2="40" stroke="#93a3ab" stroke-width="1"/>
       <text class="k" x="${tx}" y="56" text-anchor="end">${name} <tspan style="font-family:var(--mono)">${t.toFixed(2)}</tspan></text>`;
+  // 신호는 점수 낮은 것부터 그려 높은 점수의 점이 위에 오게 한다. 고른 신호는 점을 크게 그린다
+  // 신호가 없으면 사진의 최고 점수를 점 하나로 찍는다. 눈금 위 숫자는 고른 신호의 점수(없으면 최고 점수)다
   if (r) {
     r.boxes.slice().reverse().forEach((b, k) => {
       const idx = r.boxes.length - 1 - k;
@@ -558,12 +603,15 @@ function drawScale() {
   $('scale').innerHTML = s;
 }
 
+// 가운데 그림을 그린다: 사진 위에 놓치기 쉬운 구역, 정답 위치, 약한 신호, 검출 위치를 켜진 것만 겹친다
 function draw() {
   const r = st.res, c = $('main'), stage = $('stage');
   if (!r || !st.img) return;
+  // 사진을 화면 영역(48px 여백 제외)에 맞게 같은 비율로 키운다. k = 원본 1px 의 화면 크기
   const availW = stage.clientWidth - 48, availH = stage.clientHeight - 48;
   const k = Math.min(availW / r.w, availH / r.h), dpr = window.devicePixelRatio || 1;
   const cw = Math.floor(r.w * k), ch = Math.floor(r.h * k);
+  // 캔버스의 화소 수를 기기 화소 비율(dpr)만큼 늘리고, 좌표는 화면 px 그대로 쓰도록 변환을 건다
   c.style.width = cw + 'px'; c.style.height = ch + 'px';
   c.width = cw * dpr; c.height = ch * dpr;
   const g = c.getContext('2d');
@@ -571,6 +619,7 @@ function draw() {
   g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
   g.drawImage(st.img, 0, 0, cw, ch);
   if (st.show.risk) g.drawImage(st.risk, 0, 0, cw, ch);
+  // 정답 위치: 점선 네모 (정답 박스보다 사방 5px 크게)
   if (st.show.truth && r.truth) {
     g.setLineDash([4, 3]); g.lineWidth = 1; g.strokeStyle = '#cfd8dc';
     for (const [x0, y0, x1, y1] of r.truth) g.strokeRect(x0 * k - 5, y0 * k - 5, (x1 - x0) * k + 10, (y1 - y0) * k + 10);
@@ -581,6 +630,8 @@ function draw() {
     for (const b of r.weak) g.strokeRect(b.x0 * k - 7, b.y0 * k - 7, (b.x1 - b.x0) * k + 14, (b.y1 - b.y0) * k + 14);
     g.setLineDash([]);
   }
+  // 검출 위치: 박스보다 사방 7px 크게 잡고 네 귀퉁이만 꺾쇠로 그린다. 고른 신호는 선을 굵게 한다
+  // 번호는 꺾쇠 위에 적고, 위쪽 자리가 모자라면(18px 미만) 아래에 적는다
   if (st.show.box) r.boxes.forEach((b, i) => {
     const pad = 7, x0 = b.x0 * k - pad, y0 = b.y0 * k - pad, w = (b.x1 - b.x0) * k + 2 * pad, h = (b.y1 - b.y0) * k + 2 * pad, L = Math.min(9, w / 3);
     g.strokeStyle = COLOR[b.verdict]; g.lineWidth = i === st.sel ? 2.5 : 1.5;
@@ -597,6 +648,7 @@ function draw() {
   lens();
 }
 
+// 고른 신호의 둘레 19 × 19 px 를 확대해 보인다 (화면에서는 152px 로 그려 8배). 화소가 그대로 보이게 보간을 끈다
 function lens() {
   const r = st.res, b = r.boxes[st.sel];
   $('lens').hidden = !b;
@@ -608,10 +660,14 @@ function lens() {
   $('lens-cap').textContent = `${st.sel + 1}번 위치 8배 확대`;
 }
 
+// 겹쳐 그리기 단추 세 개: 누를 때마다 켜고 끄고 다시 그린다
 for (const k of ['box', 'risk', 'truth']) $('tg-' + k).onclick = e => {
   st.show[k] = !st.show[k]; e.currentTarget.setAttribute('aria-pressed', st.show[k]); draw();
 };
+// 창 크기가 바뀌면 그림을 다시 맞춘다
 window.addEventListener('resize', draw);
+// 글쇠: 1 = 이물 맞음, 2 = 이물 아님, 위 · 아래 화살표 = 목록의 앞 · 뒤 사진. 창(자가 점검 · 보고서)이 열려 있으면 받지 않는다
+// 화살표로 옮긴 뒤에는 고른 줄이 보이도록 목록을 스크롤한다
 window.addEventListener('keydown', e => {
   if (document.querySelector('dialog[open]')) return;
   if (e.key === '1' || e.key === '2') return confirmAs(e.key === '1' ? '이물' : '정상');
@@ -620,6 +676,7 @@ window.addEventListener('keydown', e => {
   const n = list[Math.max(0, Math.min(list.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
   if (n) { e.preventDefault(); pick(n.kind, n.id).then(() => document.querySelector('.row[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })); }
 });
+// 사진 올리기: 고른 파일을 서버에 보내 판정을 받고 보인다. 보낸 뒤 입력 칸을 비운다
 $('file').onchange = async e => {
   const f = e.target.files[0];
   if (!f) return;
@@ -629,6 +686,7 @@ $('file').onchange = async e => {
   if (res.error) { $('why').textContent = res.error; return; }
   show(res);
 };
+// 화면을 연다
 init();
 </script>
 </body>

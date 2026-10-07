@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent      # 저장소 최상위 폴더 (모든
 PY = sys.executable                         # 지금 실행 중인 파이썬(가상환경)으로 하위 스크립트도 돌린다
 # 단계 이름을 실행 순서대로 적은 목록. --from 은 이 목록에서의 위치로 앞 단계를 건너뛴다
 STAGES = ["prepare", "baseline", "defect_stats", "synth", "augment", "train", "cnn", "normal_set", "spec_val",
-          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "miss_risk", "zone_rules", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam",
+          "judge", "risk", "predict", "synth_eval", "location", "testpiece", "froc", "conditions", "interaction", "miss_risk", "zone_rules", "ensemble", "reference", "monitor", "cusum", "diagnose", "realism", "shortcut", "bait_gray", "gradcam",
           "uncertainty", "extra", "paste_eval", "paste_eval_ref", "unlabeled_check", "operating_point", "process_signal"]
 
 
@@ -133,6 +133,8 @@ def main():
     froc_models = ["베이스라인"] + ([cnn_name] if cnn else []) + (["y26s_640"] if any(e["name"] == "y26s_640" for e in exps) else []) + [final["name"]]
     stage("froc", lambda: sh("src/froc.py", "--final", final["name"], "--models", *froc_models, log="froc.log"))
     stage("conditions", lambda: sh("src/conditions.py", "--yolo", final["name"], log="conditions.log"))
+    # 조건 사이의 상호작용(결 × 호기, 지름 × 호기 등): conditions 가 만든 시험편 표만 읽는다. 모델을 다시 돌리지 않는다
+    stage("interaction", lambda: sh("src/interaction_analysis.py", log="interaction_analysis.log"))
     stage("miss_risk", lambda: sh("src/miss_risk.py", "--yolo", final["name"], log="miss_risk.log"))
     stage("zone_rules", lambda: sh("src/zone_rules.py", "--yolo", final["name"], log="zone_rules.log"))
     if cnn:

@@ -148,6 +148,7 @@ python run_all.py --from judge       # 특정 단계부터 이어서
 | testpiece | `src/testpiece.py` | 가상 테스트피스: 가짜 정상 사진에 크기 4종 × 진하기 8종 시험편을 칸당 150개씩 넣어 호기별 검출 사양(90% 보장 진하기) 산출 | `data/testpiece`, `results/testpiece` |
 | froc | `src/froc.py` | FROC(사진 한 장당 헛경보 수별 이물 검출률)과 CPM(LUNA16 방식 7점 평균): 실제 이물 139개 · 가상 시험편 14,400개, 규칙 기반 · CNN · 합성 전/최종 YOLO 비교 | `results/froc` |
 | conditions | `src/conditions.py` | 놓침·헛경보 조건 정리: 시험편 놓침을 대비·지름·호기·띠·주변 결로 나눠 보고(로지스틱 회귀·결정나무), 헛경보는 원본 사진의 고유 자리 기준으로 지운 자리·가장자리·띠와 비교 | `results/conditions` |
+| interaction | `src/interaction_analysis.py` | 조건 사이의 상호작용 분석: 시험편 표(`miss_testpiece.csv`)에 상호작용항을 넣은 로지스틱 회귀, 원본 영상 단위 군집 bootstrap 2,000회, 지름 1px 포함 민감도 분석, PCA. 모델을 다시 돌리지 않음 | `results/interaction_analysis` |
 | miss_risk | `src/miss_risk.py` | 놓침 위험 지도: 검증 시험편으로 놓침 모형(대비·지름·띠·가장자리·주변 결·밝기·호기)을 만들고, 사진마다 "옅은 이물이 있었다면 놓쳤을 구역"을 표시. 시험 시험편으로 검증(같은 세기에서 위치 정보만으로 AUC 0.81, 제품 면적 11%에 놓침 46%), 사진별 리포트 | `results/miss_risk` |
 | zone_rules | `src/zone_rules.py` | 위험 지도를 판정 규칙에 쓰는 시험: A 고위험 구역만 기준선 낮추기(시험편 검출률 +0.35%p에 정상 1장 · 헛경보 자리 2→11, 채택 안 함), B 합격 사진의 약한 신호(0.3 이상)를 놓침 후보로 표시(구역 제한 없이 사양 안 놓침의 40% 포착, 정상 사진 13%에 표시. 구역 제한은 이득 없음) | `results/zone_rules` |
 | ensemble | `src/ensemble.py` | YOLO + CNN 뒤집기 TTA 앙상블 판정과 흔들림 기반 재검사 비교 (val에서만 선택) | `results/ensemble` |

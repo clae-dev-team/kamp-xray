@@ -383,13 +383,38 @@ def crop_around(rects, w, h, pad=30):
 
 # ---------------------------------------------------------------- 실행
 
+def write_lists(out: Path, splits):
+    """splits/<분할>.txt 의 영상 id 로 clean · raw 폴더의 <분할>.txt(영상의 절대 경로)와 데이터셋 yaml 을 쓴다.
+
+    경로는 지금 이 폴더 기준으로 적는다. 다른 PC 로 옮긴 뒤에도 이 함수만 다시 부르면 목록이 그 자리에 맞게 바뀐다.
+    """
+    for s in splits:
+        ids = (out / "splits" / f"{s}.txt").read_text(encoding="utf-8").split("\n")
+        ids = [i for i in ids if i]
+        for v in ["clean", "raw"]:
+            paths = [str((out / v / "images" / f"{i}.png").resolve()) for i in ids]
+            (out / v / f"{s}.txt").write_text("\n".join(paths) + "\n", encoding="utf-8")
+    for v in ["clean", "raw"]:
+        ds = {"path": str((out / v).resolve()), "train": "train.txt", "val": "val.txt",
+              "test": "test.txt", "names": {0: "Defect"}}
+        yaml.safe_dump(ds, open(out / f"{v}.yaml", "w", encoding="utf-8"), allow_unicode=True)
+
+
 def main():
     """전처리 전체를 실행한다: 수집·중복 제거 → 라벨 연결 → 표시 제거 → 분할 → 목록·요약 저장."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "data.yaml"))
+    ap.add_argument("--lists-only", action="store_true", help="전처리는 하지 않고 목록 파일만 이 폴더에 맞게 다시 쓴다")
     args = ap.parse_args()
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     out = ROOT / cfg["out_dir"]
+    if args.lists_only:                      # 원본 없이 이미 정제된 데이터로 시작할 때: 목록만 이 폴더에 맞게 다시 쓴다
+        write_lists(out, cfg["split"])
+        print("목록 파일을 다시 썼습니다:", out)
+        return
+    if not any(Path(cfg["raw_root"]).glob("*/*/*.bmp")):
+        raise SystemExit(f"원본 영상을 찾지 못했습니다: {cfg['raw_root']}\n"
+                         "configs/data.yaml 의 raw_root · label_dir 를 원본 위치로 고쳐 주세요.")
     rep = ROOT / cfg["report_dir"]
     for d in ["clean/images", "clean/labels", "raw/images", "raw/labels", "splits"]:
         (out / d).mkdir(parents=True, exist_ok=True)
@@ -438,18 +463,11 @@ def main():
     uniq["split"] = ""
     uniq.loc[lab.index, "split"] = group_split(lab, cfg["split"], cfg["seed"])
 
-    # ultralytics 목록 파일과 데이터셋 yaml
-    # splits/<분할>.txt 에는 영상 id, clean·raw 폴더의 <분할>.txt 에는 영상의 절대 경로를 적는다
+    # ultralytics 목록 파일과 데이터셋 yaml. splits/<분할>.txt 에는 영상 id 를 적는다
     for s in cfg["split"]:
         ids = uniq.loc[uniq["split"] == s, "id"]
         (out / "splits" / f"{s}.txt").write_text("\n".join(ids) + "\n", encoding="utf-8")
-        for v in ["clean", "raw"]:
-            paths = [str((out / v / "images" / f"{i}.png").resolve()) for i in ids]
-            (out / v / f"{s}.txt").write_text("\n".join(paths) + "\n", encoding="utf-8")
-    for v in ["clean", "raw"]:
-        ds = {"path": str((out / v).resolve()), "train": "train.txt", "val": "val.txt",
-              "test": "test.txt", "names": {0: "Defect"}}
-        yaml.safe_dump(ds, open(out / f"{v}.yaml", "w", encoding="utf-8"), allow_unicode=True)
+    write_lists(out, cfg["split"])
 
     # 4) 목록 저장. dup_removed = 같은 내용이라 버린 파일의 경로를 | 로 이은 것 (중복이 없으면 빈 문자열)
     dup_src = all_df.groupby("sha1")["src"].apply(lambda s: "|".join(s.iloc[1:]))

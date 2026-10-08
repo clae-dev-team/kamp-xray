@@ -7,6 +7,7 @@
 
 단계와 결과 위치는 README.md 참고. 단계별 소요 시간은 results/run_all.json 에 남는다.
 원본 데이터 경로는 configs/data.yaml, 모델 설정은 configs/pipeline.yaml 에서 바꾼다.
+원본 폴더가 없으면 전처리 단계는 들어 있는 정제 데이터(data/clean)를 그대로 쓰고 다음 단계로 넘어간다.
 """
 import argparse
 import json
@@ -88,7 +89,15 @@ def main():
         timing[name] = round(time.time() - t, 1)
 
     # ---- 데이터 준비와 규칙 기반 기준 모델
-    stage("prepare", lambda: sh("src/prepare.py", log="prepare.log"))
+    def prepare():
+        """원본 영상이 있으면 전처리를 처음부터 한다. 없고 정제 데이터가 이미 있으면(제출 압축 파일) 목록만 다시 쓰고 이어 간다."""
+        raw = Path(yaml.safe_load(open(ROOT / "configs" / "data.yaml", encoding="utf-8"))["raw_root"])
+        if not raw.exists() and any((ROOT / "data" / "clean" / "images").glob("*.png")):
+            print(f"  원본 폴더({raw})가 없어 전처리는 건너뛰고, 들어 있는 정제 데이터(data/clean)로 이어서 실행합니다.", flush=True)
+            sh("src/prepare.py", "--lists-only", log="prepare.log")
+        else:
+            sh("src/prepare.py", log="prepare.log")
+    stage("prepare", prepare)
     # 규칙 기반은 정제본과 원본(색 표시가 남은 영상) 두 가지로 돌려 비교한다
     stage("baseline", lambda: (sh("src/baseline.py", log="baseline_clean.log"),
                                sh("src/baseline.py", "--variant", "raw", log="baseline_raw.log")))
